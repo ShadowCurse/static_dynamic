@@ -451,19 +451,21 @@ void sd_stage1_entry(sd_u64* sp) {
 
   sd_memcpy(interp, linker_path, linker_path_len);
 
+  // The stack needs to be 16 byte aligned, so calculate and subtract the
+  // total number of bytes needed for everything so the resulting address can
+  // be easily aligned
   sd_u32 auxv_bytes  = n_auxv * sizeof(Elf64_auxv_t);
-  Elf64_auxv_t* auxv = (Elf64_auxv_t*)sd_align_down_64((sd_u64)interp - auxv_bytes, 8);
-
   sd_u32  n_env     = (sd_u64*)orig_auxv - orig_envp - 1;
   sd_u32  env_bytes = (n_env + 1) * sizeof(sd_u64);
-  sd_u64* envp      = (sd_u64*)sd_align_down_64((sd_u64)auxv - env_bytes, 8);
-
   sd_u32 n_argv     = orig_argc + 1;
   sd_u32 argv_bytes = n_argv * sizeof(sd_u64) + sizeof(sd_u64);
-  sd_u64* argv      = (sd_u64*)sd_align_down_64((sd_u64)envp - argv_bytes, 8);
-
   sd_u32 argc_bytes = sizeof(sd_u64);
-  sd_u64* argc      = argv - 1;
+  sd_u32 total_bytes = auxv_bytes + env_bytes + argv_bytes + argc_bytes;
+
+  sd_u64* argc       = (sd_u64*)sd_align_down_64((sd_u64)interp - total_bytes, 16);
+  sd_u64* argv       = argc + 1;
+  sd_u64* envp       = argv + n_argv + 1;
+  Elf64_auxv_t* auxv = (Elf64_auxv_t*)(envp + n_env + 1);
 
   // Keep the arguments as they were passed to the original program but
   // add one additional argument which is a pointer to the `got` table
