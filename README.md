@@ -23,7 +23,7 @@ space which is just a small percentage of the usual stack on linux.
 
 > [!NOTE]
 >
-> Currently only x86_64 is supported
+> Currently only x86_64 and aarch64 are supported
 
 ## Usage
 

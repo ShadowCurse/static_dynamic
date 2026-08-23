@@ -9,38 +9,86 @@ typedef unsigned char      u8;
 typedef unsigned           u32;
 typedef unsigned long long u64;
 
-static inline u64 syscall1(u64 n, u64 a0) {
-  u64 result;
-  __asm__ __volatile__("syscall" : "=a"(result) : "a"(n), "D"(a0) : "rcx", "r11", "memory");
-  return result;
-}
-static inline u64 syscall2(u64 n, u64 a0, u64 a1) {
-  u64 result;
-  __asm__ __volatile__("syscall" : "=a"(result) : "a"(n), "D"(a0), "S"(a1) : "rcx", "r11", "memory");
-  return result;
-}
-static inline u64 syscall3(u64 n, u64 a0, u64 a1, u64 a2) {
-  u64 result;
-  __asm__ __volatile__("syscall" : "=a"(result) : "a"(n), "D"(a0), "S"(a1), "d"(a2): "rcx", "r11", "memory");
-  return result;
-}
-static inline u64 syscall4(u64 n, u64 a0, u64 a1, u64 a2, u64 a3) {
-  u64 result;
-  register u64 r10 __asm__("r10") = a3;
-  __asm__ __volatile__("syscall" : "=a"(result) : "a"(n), "D"(a0), "S"(a1), "d"(a2), "r"(r10) : "rcx", "r11", "memory");
-  return result;
-}
-static inline u64 syscall6(u64 n, u64 a0, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5) {
-  u64 result;
-  register u64 r10 __asm__("r10") = a3;
-  register u64 r8  __asm__("r8") = a4;
-  register u64 r9  __asm__("r9") = a5;
-  __asm__ __volatile__("syscall" : "=a"(result) : "a"(n), "D"(a0), "S"(a1), "d"(a2), "r"(r10), "r"(r8), "r"(r9) : "rcx", "r11", "memory");
-  return result;
-}
+#if defined(__x86_64__)
+  static inline u64 syscall1(u64 n, u64 a0) {
+    u64 result;
+    __asm__ __volatile__("syscall" : "=a"(result) : "a"(n), "D"(a0) : "rcx", "r11", "memory");
+    return result;
+  }
+  static inline u64 syscall2(u64 n, u64 a0, u64 a1) {
+    u64 result;
+    __asm__ __volatile__("syscall" : "=a"(result) : "a"(n), "D"(a0), "S"(a1) : "rcx", "r11", "memory");
+    return result;
+  }
+  static inline u64 syscall3(u64 n, u64 a0, u64 a1, u64 a2) {
+    u64 result;
+    __asm__ __volatile__("syscall" : "=a"(result) : "a"(n), "D"(a0), "S"(a1), "d"(a2): "rcx", "r11", "memory");
+    return result;
+  }
+  static inline u64 syscall4(u64 n, u64 a0, u64 a1, u64 a2, u64 a3) {
+    u64 result;
+    register u64 r10 __asm__("r10") = a3;
+    __asm__ __volatile__("syscall" : "=a"(result) : "a"(n), "D"(a0), "S"(a1), "d"(a2), "r"(r10) : "rcx", "r11", "memory");
+    return result;
+  }
+  static inline u64 syscall6(u64 n, u64 a0, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5) {
+    u64 result;
+    register u64 r10 __asm__("r10") = a3;
+    register u64 r8  __asm__("r8") = a4;
+    register u64 r9  __asm__("r9") = a5;
+    __asm__ __volatile__("syscall" : "=a"(result) : "a"(n), "D"(a0), "S"(a1), "d"(a2), "r"(r10), "r"(r8), "r"(r9) : "rcx", "r11", "memory");
+    return result;
+  }
+#elif defined(__aarch64__)
+  static inline u64 syscall1(u64 n, u64 a0) {
+    register u64 x8 __asm__("x8") = n;
+    register u64 x0 __asm__("x0") = a0;
+    __asm__ __volatile__("svc #0" : "+r"(x0) : "r"(x8) : "memory");
+    return x0;
+  }
+
+  static inline u64 syscall2(u64 n, u64 a0, u64 a1) {
+    register u64 x8 __asm__("x8") = n;
+    register u64 x0 __asm__("x0") = a0;
+    register u64 x1 __asm__("x1") = a1;
+    __asm__ __volatile__("svc #0" : "+r"(x0) : "r"(x8), "r"(x1) : "memory");
+    return x0;
+  }
+
+  static inline u64 syscall3(u64 n, u64 a0, u64 a1, u64 a2) {
+    register u64 x8 __asm__("x8") = n;
+    register u64 x0 __asm__("x0") = a0;
+    register u64 x1 __asm__("x1") = a1;
+    register u64 x2 __asm__("x2") = a2;
+    __asm__ __volatile__("svc #0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2) : "memory");
+    return x0;
+  }
+
+  static inline u64 syscall4(u64 n, u64 a0, u64 a1, u64 a2, u64 a3) {
+    register u64 x8 __asm__("x8") = n;
+    register u64 x0 __asm__("x0") = a0;
+    register u64 x1 __asm__("x1") = a1;
+    register u64 x2 __asm__("x2") = a2;
+    register u64 x3 __asm__("x3") = a3;
+    __asm__ __volatile__("svc #0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2), "r"(x3) : "memory");
+    return x0;
+  }
+
+  static inline u64 syscall6(u64 n, u64 a0, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5) {
+    register u64 x8 __asm__("x8") = n;
+    register u64 x0 __asm__("x0") = a0;
+    register u64 x1 __asm__("x1") = a1;
+    register u64 x2 __asm__("x2") = a2;
+    register u64 x3 __asm__("x3") = a3;
+    register u64 x4 __asm__("x4") = a4;
+    register u64 x5 __asm__("x5") = a5;
+    __asm__ __volatile__("svc #0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5) : "memory");
+    return x0;
+  }
+#endif
 
 static inline int m_open(const char* filename, int flags) {
-  return (int)syscall2(SYS_open, (u64)filename, (u64)flags);
+  return (int)syscall4(SYS_openat, (u64)AT_FDCWD, (u64)filename, (u64)flags, (u64)O_RDONLY);
 }
 static inline int m_close(int fd) {
   return (int)syscall1(SYS_close, (u64)fd);
@@ -84,17 +132,34 @@ static void assert(bool v) {
 
 extern int main(u64* argc_argv);
 
-__attribute__((__naked__, __noreturn__))
-static void stage2_entry() {
-  __asm__ __volatile__(
-    "movq %rsp, %rdi\n"
-    "callq main\n"
-    "movq %rax, %rdi\n"
-    "movq $231, %rax\n" // 231 is SYS_exit_group
-    "syscall\n"
-    "ud2\n"
+// Same thing as for the `_start` symbol.
+__attribute__((used))
+static void stage2_entry(void);
+
+#if defined(__x86_64__)
+  asm(
+      ".type stage2_entry, @function\n"
+      "stage2_entry:\n"
+      "    movq %rsp, %rdi\n"
+      "    call main\n"
+      "    movq %rax, %rdi\n"
+      "    movq $231, %rax\n" // 231 is SYS_exit_group
+      "    syscall\n"
+      "    ud2\n"
+      ".size stage2_entry, .-stage2_entry\n"
   );
-}
+#elif defined(__aarch64__)
+  asm(
+      ".type stage2_entry, %function\n"
+      "stage2_entry:\n"
+      "    mov x0, sp\n"
+      "    bl main\n"
+      "    mov x8, #94\n" // 94 is SYS_exit_group
+      "    svc #0\n"
+      "    udf #0\n"
+      ".size stage2_entry, .-stage2_entry\n"
+  );
+#endif
 
 // Since there is no official way to get the location of the linker on the platform
 // some tricks need to be used. In this case the trick is to simply expect for the most
@@ -106,13 +171,13 @@ static void read_linker_path(char* linker_path) {
   i32   file_fd   = m_open(file_path, O_RDONLY | O_CLOEXEC);
 
   Elf64_Ehdr ehdr;
-  m_pread(file_fd, &ehdr, sizeof(ehdr), 0);
+  assert(m_pread(file_fd, &ehdr, sizeof(ehdr), 0) == sizeof(ehdr));
 
   Elf64_Phdr phdr;
   for (i32 i = 0; i < ehdr.e_phnum; i += 1) {
-    m_pread(file_fd, &phdr, sizeof(phdr), ehdr.e_phoff + i * sizeof(phdr));
+    assert(m_pread(file_fd, &phdr, sizeof(phdr), ehdr.e_phoff + i * sizeof(phdr)) == sizeof(phdr));
     if (phdr.p_type == PT_INTERP) {
-      m_pread(file_fd, linker_path, phdr.p_filesz, phdr.p_offset);
+      assert(m_pread(file_fd, linker_path, phdr.p_filesz, phdr.p_offset) == phdr.p_filesz);
       break;
     }
   }
@@ -124,11 +189,11 @@ static void mmap_linker(char* linker_path, u8** mmap, u64* e_entry) {
   i32 linker_file_fd = m_open(linker_path, O_RDONLY | O_CLOEXEC);
 
   Elf64_Ehdr ehdr;
-  m_pread(linker_file_fd, &ehdr, sizeof(ehdr), 0);
+  assert(m_pread(linker_file_fd, &ehdr, sizeof(ehdr), 0) == sizeof(ehdr));
 
   const u64   linker_phdrs_bytes = ehdr.e_phnum * sizeof(Elf64_Phdr);
   Elf64_Phdr* linker_phdrs       = __builtin_alloca(linker_phdrs_bytes);
-  m_pread(linker_file_fd, linker_phdrs, linker_phdrs_bytes, ehdr.e_phoff);
+  assert(m_pread(linker_file_fd, linker_phdrs, linker_phdrs_bytes, ehdr.e_phoff) == linker_phdrs_bytes);
 
   u64 min_va = ~0;
   u64 max_va = 0;
@@ -157,7 +222,7 @@ static void mmap_linker(char* linker_path, u8** mmap, u64* e_entry) {
       u8* map = m_mmap((void*)beg, sz, PROT_WRITE, MAP_FIXED | MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
       assert(0 < (i64)map);
 
-      m_pread(linker_file_fd, map + off, i->p_filesz, i->p_offset);
+      assert(m_pread(linker_file_fd, map + off, i->p_filesz, i->p_offset) == i->p_filesz);
       i32 prot = 0;
       if (i->p_flags & PF_R) prot |= PROT_READ;
       if (i->p_flags & PF_W) prot |= PROT_WRITE;
@@ -171,7 +236,7 @@ static void mmap_linker(char* linker_path, u8** mmap, u64* e_entry) {
   *e_entry = ehdr.e_entry;
 }
 
-static void entry(u64* sp) {
+void entry(u64* sp) {
   char linker_path [128] = {0};
   read_linker_path(linker_path);
   u32 linker_path_len = m_strlen(linker_path);
@@ -239,7 +304,7 @@ static void entry(u64* sp) {
   u32         phdrs_bytes = n_phdrs * sizeof(Elf64_Phdr);
   Elf64_Phdr* phdrs       = (Elf64_Phdr*)align_down_64((u64)original_sp - phdrs_bytes, 8);
 
-  u64        n_dyn     = 10;
+  u64        n_dyn     = 9;
   u32        dyn_bytes = n_dyn * sizeof(Elf64_Dyn);
   Elf64_Dyn* dyn       = (Elf64_Dyn*)align_down_64((u64)phdrs - dyn_bytes, 8);
 
@@ -357,24 +422,30 @@ static void entry(u64* sp) {
     .st_size  = 0
   };
 
+#if defined(__x86_64__)
+  #define ARCH_GLOB_DAT R_X86_64_GLOB_DAT
+#elif defined(__aarch64__)
+  #define ARCH_GLOB_DAT R_AARCH64_GLOB_DAT
+#endif
+
   rela[0] = (Elf64_Rela){
     .r_offset = (u64)got + 0 * sizeof(u64),
-    .r_info   = (u64)1 << 32 | R_X86_64_GLOB_DAT,
+    .r_info   = (u64)1 << 32 | ARCH_GLOB_DAT,
     .r_addend = 0
   };
   rela[1] = (Elf64_Rela){
     .r_offset = (u64)got + 1 * sizeof(u64),
-    .r_info   = (u64)2 << 32 | R_X86_64_GLOB_DAT,
+    .r_info   = (u64)2 << 32 | ARCH_GLOB_DAT,
     .r_addend = 0
   };
   rela[2] = (Elf64_Rela){
     .r_offset = (u64)got + 2 * sizeof(u64),
-    .r_info   = (u64)3 << 32 | R_X86_64_GLOB_DAT,
+    .r_info   = (u64)3 << 32 | ARCH_GLOB_DAT,
     .r_addend = 0
   };
   rela[3] = (Elf64_Rela){
     .r_offset = (u64)got + 3 * sizeof(u64),
-    .r_info   = (u64)4 << 32 | R_X86_64_GLOB_DAT,
+    .r_info   = (u64)4 << 32 | ARCH_GLOB_DAT,
     .r_addend = 0
   };
 
@@ -383,9 +454,9 @@ static void entry(u64* sp) {
   u32 auxv_bytes     = n_auxv * sizeof(Elf64_auxv_t);
   Elf64_auxv_t* auxv = (Elf64_auxv_t*)align_down_64((u64)interp - auxv_bytes, 8);
 
-  u32 n_env     = (u64*)orig_auxv - orig_envp - 1;
-  u32 env_bytes = (n_env + 1) * sizeof(u64);
-  u64* envp     = (u64*)align_down_64((u64)auxv - env_bytes, 8);
+  u32  n_env     = (u64*)orig_auxv - orig_envp - 1;
+  u32  env_bytes = (n_env + 1) * sizeof(u64);
+  u64* envp      = (u64*)align_down_64((u64)auxv - env_bytes, 8);
 
   u32 n_argv     = orig_argc + 1;
   u32 argv_bytes = n_argv * sizeof(u64) + sizeof(u64);
@@ -424,23 +495,54 @@ static void entry(u64* sp) {
   *auxv =     (Elf64_auxv_t){ .a_type = AT_NULL,  .a_un.a_val = (u64)0             };
 
   u64 linker_entry = (u64)(linker_map + e_entry);
+
+#if defined(__x86_64__)
   __asm__ __volatile__(
     "mov %1,%%rsp\n"
     "jmpq *%0\n"
     :
     : "S"(linker_entry), "d"((u64)argc)
     : "memory");
+#elif defined(__aarch64__)
+  __asm__ __volatile__(
+      "mov sp, %1\n"
+      "br %0\n"
+      :
+      : "r"(linker_entry), "r"((u64)argc)
+      : "memory");
+#endif
+
   __builtin_unreachable();
 }
 
-__attribute__((__naked__, __noreturn__))
-void _start() {
-  __asm__ __volatile__(
-    "movq %%rsp, %%rdi\n\t"
-    "movq %%rdx, %%rsi\n\t"
-    "subq $8192, %%rsp\n\t" // Subtract enough space for all the permanent data and hope this is enough
-    "callq *%0\n\t"
-    :
-    : "r"(entry)
-    : "rdi", "rsi", "cc");
-}
+// Define _start as a top level assembly block because on aarch64 gcc does not
+// respect the `__naked__` attribute and still adds the prolog to the function
+// that messes up the stack pointer.
+// On x86_64 this is not an issue, but do same thing just to be consistent
+__attribute__((used))
+void _start(void);
+
+#if defined(__x86_64__)
+  asm(
+      ".global _start\n"
+      ".type _start, @function\n"
+      "_start:\n"
+      "    movq %rsp, %rdi\n"
+      "    movq %rdx, %rsi\n"
+      "    subq $8192, %rsp\n"
+      "    call entry\n"
+      ".size _start, .-_start\n"
+  );
+#elif defined(__aarch64__)
+  asm(
+    ".global _start\n"
+    ".type _start, %function\n"
+    "_start:\n"
+    "    mov x1, x0\n"
+    "    mov x0, sp\n"
+    "    sub sp, sp, #8192\n"
+    "    ldr x2, =entry\n"
+    "    blr x2\n"
+    ".size _start, .-_start\n"
+  );
+#endif
