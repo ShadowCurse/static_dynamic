@@ -106,6 +106,7 @@ static inline void* sd_mmap(void *addr, sd_u64 length, int prot, int flags, int 
   return (void *)sd_syscall6(SYS_mmap, (sd_u64)addr, (sd_u64)length, (sd_u64)prot, (sd_u64)flags, (sd_u64)fd, (sd_u64)offset);
 }
 
+__attribute__((optimize("no-tree-loop-distribute-patterns")))
 static sd_u32 sd_strlen(const char* s) {
   sd_u32 result = 0;
   while(*s) { s += 1; result += 1; }
