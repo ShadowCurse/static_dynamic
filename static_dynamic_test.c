@@ -12,14 +12,14 @@ typedef char* (*dlerror_fn)(void);
 typedef int   (*printf_fn)(const char *restrict format, ...);
 typedef float (*sinf_fn)(float);
 
-thread_local u32   tl_a = 5;
+thread_local sd_u32   tl_a = 5;
 
-int main(u64* argc_argv) {
+int main(sd_u64* argc_argv) {
   printf("musl-libc printf: argc_argv: %p", argc_argv);
 
-  u64  argc = *argc_argv;
-  u64* argv = argc_argv + 1;
-  u64* got  = (u64*)*(argc_argv + argc);
+  sd_u64  argc = *argc_argv;
+  sd_u64* argv = argc_argv + 1;
+  sd_u64* got  = (sd_u64*)*(argc_argv + argc);
 
   dlopen_fn  dlopen  = (dlopen_fn) got[0];
   dlsym_fn   dlsym   = (dlsym_fn)  got[1];
@@ -33,7 +33,7 @@ int main(u64* argc_argv) {
   printf_fn printf2 = (printf_fn)dlsym(libc, "printf");
 
   printf2("dynamic libc argc %d\n", argc);
-  for (u32 i = 0; i < argc - 1; i += 1) {
+  for (sd_u32 i = 0; i < argc - 1; i += 1) {
     printf2("argv[%d] %s\n", i, argv[i]);
   }
   printf2("thread local a %d\n", tl_a );
