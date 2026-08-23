@@ -27,35 +27,29 @@ space which is just a small percentage of the usual stack on linux.
 
 ## Usage
 
-Just include the header to your application and change the `main` function signature to
+Just include the header to your application and ensure the `main` function signature is
 
 ```c
-int main(u64* argc_argv)
+int main(int argc, char** argv)
 ```
 
-To obtain `argc`, `argv`, `envp` and so on, just do a simple pointer math:
+The access to the `dlopen` and other functions just access the `sd_got` global.
+There is also a `SD_RTLD_NOW` macro already defined to avoid including additional headers.
 
 ```c
-u64  argc = *argc_argv;
-u64* argv = argc_argv + 1;
-u64* envp = argv + argc + 1;
+void* libc = sd_got.dlopen("libc.so.6", SD_RTLD_NOW);
 ```
 
-The access to the `dlopen` and other functions is provided as an additional
-argument at the very end of the argument list:
+The `sd_got` itself contains 4 function pointers: `dlopen`, `dlsym`,
+`dlclose`, `dlerror`:
 
 ```c
-u64* got  = (u64*)*(argc_argv + argc);
-```
-
-The `got` is a pointer to the array of 4 function pointers: `dlopen`, `dlsym`,
-`dlclose`, `dlerror`
-
-```c
-dlopen_fn  dlopen  = (dlopen_fn) got[0];
-dlsym_fn   dlsym   = (dlsym_fn)  got[1];
-dlclose_fn dlclose = (dlclose_fn)got[2];
-dlerror_fn dlerror = (dlerror_fn)got[3];
+typedef struct {
+  sd_dlopen_fn  dlopen;
+  sd_dlsym_fn   dlsym;
+  sd_dlclose_fn dlclose;
+  sd_dlerror_fn dlerror;
+} sd_got_t;
 ```
 
 ### Compilation flags

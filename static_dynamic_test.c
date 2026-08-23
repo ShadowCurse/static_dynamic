@@ -3,34 +3,22 @@
 #include <sys/auxv.h>
 #include "raylib.h"
 
-#define RTLD_NOW 0x0002
-typedef void* (*dlopen_fn)(const char *path, int flags);;
-typedef void* (*dlsym_fn)(void *restrict handle, const char *restrict symbol);
-typedef int   (*dlclose_fn)(void *handle);
-typedef char* (*dlerror_fn)(void);
-
 typedef int   (*printf_fn)(const char *restrict format, ...);
 typedef float (*sinf_fn)(float);
 
 thread_local sd_u32   tl_a = 5;
 
-int main(sd_u64* argc_argv) {
-  printf("musl-libc printf: argc_argv: %p", argc_argv);
+int main(int argc, char** argv) {
+  printf("sd_got dlopen:  %p\n", sd_got.dlopen);
+  printf("sd_got dlsym:   %p\n", sd_got.dlsym);
+  printf("sd_got dlclose: %p\n", sd_got.dlclose);
+  printf("sd_got dlerror: %p\n", sd_got.dlerror);
 
-  sd_u64  argc = *argc_argv;
-  sd_u64* argv = argc_argv + 1;
-  sd_u64* got  = (sd_u64*)*(argc_argv + argc);
+  void* libc   = sd_got.dlopen("libc.so.6", SD_RTLD_NOW);
+  void *libm   = sd_got.dlopen("libm.so.6", SD_RTLD_NOW);
+  void *raylib = sd_got.dlopen("libraylib.so", SD_RTLD_NOW);
 
-  dlopen_fn  dlopen  = (dlopen_fn) got[0];
-  dlsym_fn   dlsym   = (dlsym_fn)  got[1];
-  dlclose_fn dlclose = (dlclose_fn)got[2];
-  dlerror_fn dlerror = (dlerror_fn)got[3];
-
-  void* libc   = dlopen("libc.so.6", RTLD_NOW);
-  void *libm   = dlopen("libm.so.6", RTLD_NOW);
-  void *raylib = dlopen("libraylib.so", RTLD_NOW);
-
-  printf_fn printf2 = (printf_fn)dlsym(libc, "printf");
+  printf_fn printf2 = (printf_fn)sd_got.dlsym(libc, "printf");
 
   printf2("dynamic libc argc %d\n", argc);
   for (sd_u32 i = 0; i < argc - 1; i += 1) {
@@ -42,20 +30,23 @@ int main(sd_u64* argc_argv) {
   printf2("libm.so is %p\n", libm);
   printf2("raylib.so is %p\n", raylib);
 
+  void *libfoo = sd_got.dlopen("libfoo.so", SD_RTLD_NOW);
+  printf2("libfoo: %s\n", sd_got.dlerror());
+
   if (libm && raylib) {
     printf2("Demo time\n");
 
-    float (*sinf)(float)                                   = dlsym(libm, "sinf");
-    void  (*rlInitWindow)(int, int, const char*)           = dlsym(raylib, "InitWindow");
-    void  (*rlSetTargetFPS)(int)                           = dlsym(raylib, "SetTargetFPS");
-    bool  (*rlWindowShouldClose)(void)                     = dlsym(raylib, "WindowShouldClose");
-    float (*rlGetFrameTime)(void)                          = dlsym(raylib, "GetFrameTime");
-    void  (*rlBeginDrawing)(void)                          = dlsym(raylib, "BeginDrawing");
-    void  (*rlClearBackground)(Color)                      = dlsym(raylib, "ClearBackground");
-    void  (*rlDrawCircleV)(Vector2, float, Color)          = dlsym(raylib, "DrawCircleV");
-    void  (*rlDrawText)(const char*, int, int, int, Color) = dlsym(raylib, "DrawText");
-    void  (*rlEndDrawing)(void)                            = dlsym(raylib, "EndDrawing");
-    void  (*rlCloseWindow)(void)                           = dlsym(raylib, "CloseWindow");
+    float (*sinf)(float)                                   = sd_got.dlsym(libm, "sinf");
+    void  (*rlInitWindow)(int, int, const char*)           = sd_got.dlsym(raylib, "InitWindow");
+    void  (*rlSetTargetFPS)(int)                           = sd_got.dlsym(raylib, "SetTargetFPS");
+    bool  (*rlWindowShouldClose)(void)                     = sd_got.dlsym(raylib, "WindowShouldClose");
+    float (*rlGetFrameTime)(void)                          = sd_got.dlsym(raylib, "GetFrameTime");
+    void  (*rlBeginDrawing)(void)                          = sd_got.dlsym(raylib, "BeginDrawing");
+    void  (*rlClearBackground)(Color)                      = sd_got.dlsym(raylib, "ClearBackground");
+    void  (*rlDrawCircleV)(Vector2, float, Color)          = sd_got.dlsym(raylib, "DrawCircleV");
+    void  (*rlDrawText)(const char*, int, int, int, Color) = sd_got.dlsym(raylib, "DrawText");
+    void  (*rlEndDrawing)(void)                            = sd_got.dlsym(raylib, "EndDrawing");
+    void  (*rlCloseWindow)(void)                           = sd_got.dlsym(raylib, "CloseWindow");
 
     rlInitWindow(1280, 720, "test");
     rlSetTargetFPS(60);
@@ -89,7 +80,7 @@ int main(sd_u64* argc_argv) {
     }
     rlCloseWindow();
     printf2("End of the demo\n");
-    dlclose(raylib);
+    sd_got.dlclose(raylib);
   } else {
     printf2("Cannot load raylib, so no demo\n");
   }

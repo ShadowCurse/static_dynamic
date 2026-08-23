@@ -130,7 +130,25 @@ static void sd_assert(bool v) {
   if (!v) *(char*)0 = 1;
 }
 
-extern int main(sd_u64* argc_argv);
+#define SD_RTLD_NOW 0x0002
+typedef void* (*sd_dlopen_fn)(const char *path, int flags);;
+typedef void* (*sd_dlsym_fn)(void *restrict handle, const char *restrict symbol);
+typedef int   (*sd_dlclose_fn)(void *handle);
+typedef char* (*sd_dlerror_fn)(void);
+
+typedef struct {
+  sd_dlopen_fn  dlopen;
+  sd_dlsym_fn   dlsym;
+  sd_dlclose_fn dlclose;
+  sd_dlerror_fn dlerror;
+} sd_got_t;
+
+// This global acts a role of a `got` table (hence the name), so any references to the `got`
+// down bellow are references for this global. Here the linker will write
+// function pointers from the loaded `libc`.
+sd_got_t sd_got;
+
+extern int main(int argc, char** argv);
 
 // Same thing as for the `_start` symbol.
 __attribute__((used))
@@ -140,7 +158,8 @@ static void sd_stage2_entry(void);
   asm(
       ".type sd_stage2_entry, @function\n"
       "sd_stage2_entry:\n"
-      "    movq %rsp, %rdi\n"
+      "    movq (%rsp), %rdi\n"    // argc = *sp
+      "    leaq 8(%rsp), %rsi\n"   // argv = sp + 1
       "    call main\n"
       "    movq %rax, %rdi\n"
       "    movq $231, %rax\n" // 231 is SYS_exit_group
@@ -152,7 +171,8 @@ static void sd_stage2_entry(void);
   asm(
       ".type sd_stage2_entry, %function\n"
       "sd_stage2_entry:\n"
-      "    mov x0, sp\n"
+      "    ldr x0, [sp]\n"         // argc = *sp
+      "    add x1, sp, #8\n"       // argv = sp + 1
       "    bl main\n"
       "    mov x8, #94\n" // 94 is SYS_exit_group
       "    svc #0\n"
@@ -257,7 +277,6 @@ void sd_stage1_entry(sd_u64* sp) {
   // | new strtab
   // | new symtab
   // | new rela
-  // | new got
   // | new interp
   // |---------------
   // | new auxv
@@ -318,15 +337,11 @@ void sd_stage1_entry(sd_u64* sp) {
   sd_u32     symtab_bytes = n_sym * sizeof(Elf64_Sym);
   Elf64_Sym* symtab       = (Elf64_Sym*)sd_align_down_64((sd_u64)strtab - symtab_bytes, 8);
 
-  sd_u32      n_rela     = 4;
+  sd_u32      n_rela     = sizeof(sd_got_t) / sizeof(void*);
   sd_u32      rela_bytes = n_rela * sizeof(Elf64_Rela);
   Elf64_Rela* rela       = (Elf64_Rela*)sd_align_down_64((sd_u64)symtab - rela_bytes, 8);
 
-  sd_u32  n_got     = 4;
-  sd_u32  got_bytes = n_got * sizeof(sd_u64);
-  sd_u64* got       = (sd_u64*)sd_align_down_64((sd_u64)rela - got_bytes, 8);
-
-  char* interp = (char*)((sd_u64)got - linker_path_len);
+  char* interp = (char*)((sd_u64)rela - linker_path_len);
 
   // Copy original phdrs as they are except with modification to the PT_PHDR
   // since they are now at a different address
@@ -376,15 +391,15 @@ void sd_stage1_entry(sd_u64* sp) {
   sd_u32 strtab_dlclose_name_off = 24;
   sd_u32 strtab_dlerror_name_off = 32;
 
-  dyn[0] = (Elf64_Dyn){ .d_tag = DT_NEEDED,  .d_un.d_val = strtab_libc_off            };
-  dyn[1] = (Elf64_Dyn){ .d_tag = DT_STRTAB,  .d_un.d_val = (sd_u64)strtab                };
-  dyn[2] = (Elf64_Dyn){ .d_tag = DT_STRSZ,   .d_un.d_val = strtab_str_len             };
-  dyn[3] = (Elf64_Dyn){ .d_tag = DT_SYMTAB,  .d_un.d_val = (sd_u64)symtab                };
-  dyn[4] = (Elf64_Dyn){ .d_tag = DT_SYMENT,  .d_un.d_val = sizeof(Elf64_Sym)          };
-  dyn[5] = (Elf64_Dyn){ .d_tag = DT_RELA,    .d_un.d_val = (sd_u64)rela                  };
-  dyn[6] = (Elf64_Dyn){ .d_tag = DT_RELASZ,  .d_un.d_val = n_got * sizeof(Elf64_Rela) };
-  dyn[7] = (Elf64_Dyn){ .d_tag = DT_RELAENT, .d_un.d_val = sizeof(Elf64_Rela)         };
-  dyn[8] = (Elf64_Dyn){ .d_tag = DT_NULL,    .d_un.d_val = 0                          };
+  dyn[0] = (Elf64_Dyn){ .d_tag = DT_NEEDED,  .d_un.d_val = strtab_libc_off    };
+  dyn[1] = (Elf64_Dyn){ .d_tag = DT_STRTAB,  .d_un.d_val = (sd_u64)strtab     };
+  dyn[2] = (Elf64_Dyn){ .d_tag = DT_STRSZ,   .d_un.d_val = strtab_str_len     };
+  dyn[3] = (Elf64_Dyn){ .d_tag = DT_SYMTAB,  .d_un.d_val = (sd_u64)symtab     };
+  dyn[4] = (Elf64_Dyn){ .d_tag = DT_SYMENT,  .d_un.d_val = sizeof(Elf64_Sym)  };
+  dyn[5] = (Elf64_Dyn){ .d_tag = DT_RELA,    .d_un.d_val = (sd_u64)rela       };
+  dyn[6] = (Elf64_Dyn){ .d_tag = DT_RELASZ,  .d_un.d_val = rela_bytes         };
+  dyn[7] = (Elf64_Dyn){ .d_tag = DT_RELAENT, .d_un.d_val = sizeof(Elf64_Rela) };
+  dyn[8] = (Elf64_Dyn){ .d_tag = DT_NULL,    .d_un.d_val = 0                  };
 
   sd_memcpy(strtab, strtab_str, strtab_str_len);
 
@@ -428,23 +443,24 @@ void sd_stage1_entry(sd_u64* sp) {
   #define SD_ARCH_GLOB_DAT  R_AARCH64_GLOB_DAT
 #endif
 
+  // Tell the linker where to write function pointers inside `got` table
   rela[0] = (Elf64_Rela){
-    .r_offset = (sd_u64)got + 0 * sizeof(sd_u64),
+    .r_offset = (sd_u64)(&sd_got) + 0 * sizeof(sd_u64),
     .r_info   = (sd_u64)1 << 32 | SD_ARCH_GLOB_DAT ,
     .r_addend = 0
   };
   rela[1] = (Elf64_Rela){
-    .r_offset = (sd_u64)got + 1 * sizeof(sd_u64),
+    .r_offset = (sd_u64)(&sd_got) + 1 * sizeof(sd_u64),
     .r_info   = (sd_u64)2 << 32 | SD_ARCH_GLOB_DAT ,
     .r_addend = 0
   };
   rela[2] = (Elf64_Rela){
-    .r_offset = (sd_u64)got + 2 * sizeof(sd_u64),
+    .r_offset = (sd_u64)(&sd_got) + 2 * sizeof(sd_u64),
     .r_info   = (sd_u64)3 << 32 | SD_ARCH_GLOB_DAT ,
     .r_addend = 0
   };
   rela[3] = (Elf64_Rela){
-    .r_offset = (sd_u64)got + 3 * sizeof(sd_u64),
+    .r_offset = (sd_u64)(&sd_got) + 3 * sizeof(sd_u64),
     .r_info   = (sd_u64)4 << 32 | SD_ARCH_GLOB_DAT ,
     .r_addend = 0
   };
@@ -455,11 +471,11 @@ void sd_stage1_entry(sd_u64* sp) {
   // total number of bytes needed for everything so the resulting address can
   // be easily aligned
   sd_u32 auxv_bytes  = n_auxv * sizeof(Elf64_auxv_t);
-  sd_u32  n_env     = (sd_u64*)orig_auxv - orig_envp - 1;
-  sd_u32  env_bytes = (n_env + 1) * sizeof(sd_u64);
-  sd_u32 n_argv     = orig_argc + 1;
-  sd_u32 argv_bytes = n_argv * sizeof(sd_u64) + sizeof(sd_u64);
-  sd_u32 argc_bytes = sizeof(sd_u64);
+  sd_u32 n_env       = (sd_u64*)orig_auxv - orig_envp - 1;
+  sd_u32 env_bytes   = (n_env + 1) * sizeof(sd_u64);
+  sd_u32 n_argv      = orig_argc;
+  sd_u32 argv_bytes  = n_argv * sizeof(sd_u64) + sizeof(sd_u64);
+  sd_u32 argc_bytes  = sizeof(sd_u64);
   sd_u32 total_bytes = auxv_bytes + env_bytes + argv_bytes + argc_bytes;
 
   sd_u64* argc       = (sd_u64*)sd_align_down_64((sd_u64)interp - total_bytes, 16);
@@ -471,7 +487,6 @@ void sd_stage1_entry(sd_u64* sp) {
   // add one additional argument which is a pointer to the `got` table
   *argc            = n_argv;
   sd_memcpy((char*)argv, (char*)orig_argv, n_argv * sizeof(sd_u64));
-  argv[n_argv - 1] = (sd_u64)got;
   argv[n_argv]     = 0x0;
 
   // Copy all environment vars as they were since they now need to be
