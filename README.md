@@ -1,12 +1,12 @@
 # Static dynamic
 
-The one header library to allow statically linked binaries get access to the
+The one header library to allow statically linked binaries to get access to the
 dynamic loading functionality.
 
 The trick for doing this is to make the application do part of the kernel job
-and load the dynamic linker manually. This has additional benefit of making the
-application `libc` version independent. The path to the linker is found using
-an assumption that on each linux machine there is a dynamically linked
+and load the dynamic linker manually. This has the additional benefit of making
+the application `libc` version independent. The path to the linker is found
+using an assumption that on each Linux machine there is a dynamically linked
 `/bin/sh` binary from which the system's linker path can be obtained. Assuming
 this holds on all distributions, this also makes the application linker
 independent.
@@ -16,7 +16,7 @@ still use statically linked `libc` such as `musl` without issues.
 
 For doing all of the preparatory work, the library needs some space to store
 data required for the dynamic linker to launch properly. Trying to take as
-little space as possible and be non intrusive as possible, the library
+little space as possible and be non-intrusive as possible, the library
 allocates all of the permanent data on the stack in a tightly packed manner.
 This uses ~2K (depends on the number of args and env vars present) of the stack
 space which is just a small percentage of the usual stack on linux.
@@ -58,7 +58,16 @@ dlclose_fn dlclose = (dlclose_fn)got[2];
 dlerror_fn dlerror = (dlerror_fn)got[3];
 ```
 
-There is an example `static_dynamic_test.c` that shows all of this as well and
+### Compilation flags
+
+The loading of the dynamic linker happens before the `main` is called. For this
+reason the library defines its own `_start` symbol from which the program
+execution should start. For this to work, build must include compilation flags:
+`-nostartfiles -fno-stack-protector`.
+
+### Example
+
+There is an example `static_dynamic_test.c` with `build.sh` that shows all of this and
 builds a simple `raylib` demo with this functionality
 
 ## Acknowledgements
