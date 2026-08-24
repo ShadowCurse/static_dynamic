@@ -6,7 +6,7 @@
 typedef int   (*printf_fn)(const char *restrict format, ...);
 typedef float (*sinf_fn)(float);
 
-thread_local sd_u32   tl_a = 5;
+_Thread_local sd_u32 tl_a = 5;
 
 int main(int argc, char** argv) {
   printf("sd_got dlopen:  %p\n", sd_got.dlopen);

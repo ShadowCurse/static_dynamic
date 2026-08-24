@@ -106,7 +106,14 @@ static inline void* sd_mmap(void *addr, sd_u64 length, int prot, int flags, int 
   return (void *)sd_syscall6(SYS_mmap, (sd_u64)addr, (sd_u64)length, (sd_u64)prot, (sd_u64)flags, (sd_u64)fd, (sd_u64)offset);
 }
 
-__attribute__((optimize("no-tree-loop-distribute-patterns")))
+// Compilers can decide to replace this function with a stdlib `strlen` call if
+// optimizations are enabled. This will make compilation fail when `nostdlib`
+// flag is used since linker will not find `strlen`.
+#if defined(__clang__)
+  __attribute__((no_builtin))
+#elif defined(__GNUC__)
+  __attribute__((optimize("no-tree-loop-distribute-patterns")))
+#endif
 static sd_u32 sd_strlen(const char* s) {
   sd_u32 result = 0;
   while(*s) { s += 1; result += 1; }
@@ -127,8 +134,8 @@ static sd_u64 sd_align_down_64(sd_u64 v, sd_u64 a) {
   return v & ~(a - 1);
 }
 
-static void sd_assert(bool v) {
-  if (!v) *(char*)0 = 1;
+static void sd_assert(sd_i32 v) {
+  if (!v) __builtin_trap();
 }
 
 #define SD_RTLD_NOW 0x0002
@@ -151,34 +158,37 @@ sd_got_t sd_got;
 
 extern int main(int argc, char** argv);
 
-// Same thing as for the `_start` symbol.
-__attribute__((used))
-static void sd_stage2_entry(void);
+// Do this weird definition to silence "used but not defined" warnings. The
+// reason for defining a function with top level `asm` block is same as for the
+// `_start` symbol bellow.
+extern void sd_stage2_entry(void) __asm__("sd_stage2_entry_asm");
 
 #if defined(__x86_64__)
   asm(
-      ".type sd_stage2_entry, @function\n"
-      "sd_stage2_entry:\n"
-      "    movq (%rsp), %rdi\n"    // argc = *sp
-      "    leaq 8(%rsp), %rsi\n"   // argv = sp + 1
+      ".local sd_stage2_entry_asm\n"
+      ".type sd_stage2_entry_asm, @function\n"
+      "sd_stage2_entry_asm:\n"
+      "    movq (%rsp), %rdi\n"
+      "    leaq 8(%rsp), %rsi\n"
       "    call main\n"
       "    movq %rax, %rdi\n"
       "    movq $231, %rax\n" // 231 is SYS_exit_group
       "    syscall\n"
       "    ud2\n"
-      ".size sd_stage2_entry, .-sd_stage2_entry\n"
+      ".size sd_stage2_entry_asm, .-sd_stage2_entry_asm\n"
   );
 #elif defined(__aarch64__)
   asm(
-      ".type sd_stage2_entry, %function\n"
-      "sd_stage2_entry:\n"
-      "    ldr x0, [sp]\n"         // argc = *sp
-      "    add x1, sp, #8\n"       // argv = sp + 1
+      ".local sd_stage2_entry_asm\n"
+      ".type sd_stage2_entry_asm, %function\n"
+      "sd_stage2_entry_asm:\n"
+      "    ldr x0, [sp]\n"
+      "    add x1, sp, #8\n"
       "    bl main\n"
       "    mov x8, #94\n" // 94 is SYS_exit_group
       "    svc #0\n"
       "    udf #0\n"
-      ".size sd_stage2_entry, .-sd_stage2_entry\n"
+      ".size sd_stage2_entry_asm, .-sd_stage2_entry_asm\n"
   );
 #endif
 
@@ -533,10 +543,10 @@ void sd_stage1_entry(sd_u64* sp) {
   __builtin_unreachable();
 }
 
-// Define _start as a top level assembly block because on aarch64 gcc does not
-// respect the `__naked__` attribute and still adds the prolog to the function
-// that messes up the stack pointer.
-// On x86_64 this is not an issue, but do same thing just to be consistent
+// Define _start as a top level assembly block because on aarch64 compilers
+// does not respect the `__naked__` attribute and still adds the prolog to the
+// function that messes up the stack pointer. On x86_64 this is not an issue,
+// but do same thing just to be consistent
 __attribute__((used))
 void _start(void);
 
