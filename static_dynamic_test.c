@@ -21,7 +21,7 @@ int main(int argc, char** argv) {
   printf_fn printf2 = (printf_fn)sd_got.dlsym(libc, "printf");
 
   printf2("dynamic libc argc %d\n", argc);
-  for (sd_u32 i = 0; i < argc - 1; i += 1) {
+  for (sd_u32 i = 0; i < argc; i += 1) {
     printf2("argv[%d] %s\n", i, argv[i]);
   }
   printf2("thread local a %d\n", tl_a );
