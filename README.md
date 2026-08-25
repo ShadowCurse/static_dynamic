@@ -33,6 +33,13 @@ Just include the header to your application and ensure the `main` function signa
 int main(int argc, char** argv)
 ```
 
+> [!NOTE]
+>
+> Even though unlikely, there is still a possibility that loading dynamic
+> linker will fail. To check if there was an error just check the
+> `sd_got.success` and if there was one `sd_got.error` will contain the error
+> code.
+
 The access to the `dlopen` and other functions just access the `sd_got` global.
 There is also a `SD_RTLD_NOW` macro already defined to avoid including additional headers.
 
@@ -41,16 +48,7 @@ void* libc = sd_got.dlopen("libc.so.6", SD_RTLD_NOW);
 ```
 
 The `sd_got` itself contains 4 function pointers: `dlopen`, `dlsym`,
-`dlclose`, `dlerror`:
-
-```c
-typedef struct {
-  sd_dlopen_fn  dlopen;
-  sd_dlsym_fn   dlsym;
-  sd_dlclose_fn dlclose;
-  sd_dlerror_fn dlerror;
-} sd_got_t;
-```
+`dlclose`, `dlerror`.
 
 ### Compilation flags
 
@@ -58,6 +56,13 @@ The loading of the dynamic linker happens before the `main` is called. For this
 reason the library defines its own `_start` symbol from which the program
 execution should start. For this to work, build must include compilation flags:
 `-nostartfiles -fno-stack-protector`.
+
+### Usage with statically linked `musl`
+
+If program links `musl` it is advised to define `SD_MUSL` to allow for a
+graceful fallback in case of linker loading error. If that happen the `musl`
+library will still be initialized and so you would be able to call it's
+functions as usual. Otherwise your program will fail on the first `musl` call.
 
 ### Example
 

@@ -144,11 +144,28 @@ typedef void* (*sd_dlsym_fn)(void *restrict handle, const char *restrict symbol)
 typedef int   (*sd_dlclose_fn)(void *handle);
 typedef char* (*sd_dlerror_fn)(void);
 
-typedef struct {
-  sd_dlopen_fn  dlopen;
-  sd_dlsym_fn   dlsym;
-  sd_dlclose_fn dlclose;
-  sd_dlerror_fn dlerror;
+typedef enum sd_u64 {
+  SD_ERROR_NONE,
+  SD_ERROR_NO_BOUNCE_BINARY,
+  SD_ERROR_CANNOT_READ_BOUNCE_BINARY,
+  SD_ERROR_NO_LINKER_PATH,
+  SD_ERROR_NO_LINKER,
+  SD_ERROR_CANNOT_LOAD_LINKER,
+} sd_error;
+
+typedef union {
+  struct {
+    sd_dlopen_fn  dlopen;
+    sd_dlsym_fn   dlsym;
+    sd_dlclose_fn dlclose;
+    sd_dlerror_fn dlerror;
+  };
+  struct {
+    sd_u64        success;
+    sd_error      error;
+    sd_u64        _padding1;
+    sd_u64        _padding2;
+  };
 } sd_got_t;
 
 // This global acts a role of a `got` table (hence the name), so any references to the `got`
@@ -161,13 +178,13 @@ extern int main(int argc, char** argv);
 // Do this weird definition to silence "used but not defined" warnings. The
 // reason for defining a function with top level `asm` block is same as for the
 // `_start` symbol bellow.
-extern void sd_stage2_entry(void) __asm__("sd_stage2_entry_asm");
+extern void sd_stage2_entry(void);
 
 #if defined(__x86_64__)
   asm(
-      ".local sd_stage2_entry_asm\n"
-      ".type sd_stage2_entry_asm, @function\n"
-      "sd_stage2_entry_asm:\n"
+      ".local sd_stage2_entry\n"
+      ".type sd_stage2_entry, @function\n"
+      "sd_stage2_entry:\n"
       "    movq (%rsp), %rdi\n"
       "    leaq 8(%rsp), %rsi\n"
       "    call main\n"
@@ -175,20 +192,20 @@ extern void sd_stage2_entry(void) __asm__("sd_stage2_entry_asm");
       "    movq $231, %rax\n" // 231 is SYS_exit_group
       "    syscall\n"
       "    ud2\n"
-      ".size sd_stage2_entry_asm, .-sd_stage2_entry_asm\n"
+      ".size sd_stage2_entry, .-sd_stage2_entry\n"
   );
 #elif defined(__aarch64__)
   asm(
-      ".local sd_stage2_entry_asm\n"
-      ".type sd_stage2_entry_asm, %function\n"
-      "sd_stage2_entry_asm:\n"
+      ".local sd_stage2_entry\n"
+      ".type sd_stage2_entry, %function\n"
+      "sd_stage2_entry:\n"
       "    ldr x0, [sp]\n"
       "    add x1, sp, #8\n"
       "    bl main\n"
       "    mov x8, #94\n" // 94 is SYS_exit_group
       "    svc #0\n"
       "    udf #0\n"
-      ".size sd_stage2_entry_asm, .-sd_stage2_entry_asm\n"
+      ".size sd_stage2_entry, .-sd_stage2_entry\n"
   );
 #endif
 
@@ -197,34 +214,61 @@ extern void sd_stage2_entry(void) __asm__("sd_stage2_entry_asm");
 // wide spread binary on the system to exist. In this case it is `/bin/sh`. Maybe there is
 // a distribution which does not have `/bin/sh` or has it statically linked, but then ...
 // you can't win them all..
-static void sd_read_linker_path(char* linker_path) {
+static sd_error sd_read_linker_path(char* linker_path) {
   char*  file_path = "/bin/sh";
   sd_i32 file_fd   = sd_open(file_path, O_RDONLY | O_CLOEXEC);
+  if (file_fd < 0) {
+    return SD_ERROR_NO_BOUNCE_BINARY;
+  }
 
   Elf64_Ehdr ehdr;
-  sd_assert(sd_pread(file_fd, &ehdr, sizeof(ehdr), 0) == sizeof(ehdr));
+  if (sd_pread(file_fd, &ehdr, sizeof(ehdr), 0) != sizeof(ehdr)) {
+    sd_close(file_fd);
+    return SD_ERROR_CANNOT_READ_BOUNCE_BINARY;
+  }
 
   Elf64_Phdr phdr;
   for (sd_i32 i = 0; i < ehdr.e_phnum; i += 1) {
-    sd_assert(sd_pread(file_fd, &phdr, sizeof(phdr), ehdr.e_phoff + i * sizeof(phdr)) == sizeof(phdr));
+    if (sd_pread(file_fd, &phdr, sizeof(phdr), ehdr.e_phoff + i * sizeof(phdr)) != sizeof(phdr)) {
+      sd_close(file_fd);
+      return SD_ERROR_CANNOT_READ_BOUNCE_BINARY;
+    }
     if (phdr.p_type == PT_INTERP) {
-      sd_assert(sd_pread(file_fd, linker_path, phdr.p_filesz, phdr.p_offset) == phdr.p_filesz);
+      if (sd_pread(file_fd, linker_path, phdr.p_filesz, phdr.p_offset) != phdr.p_filesz) {
+        sd_close(file_fd);
+        return SD_ERROR_CANNOT_READ_BOUNCE_BINARY;
+      }
       break;
     }
   }
   sd_close(file_fd);
+
+  if (phdr.p_type != PT_INTERP) {
+    return SD_ERROR_NO_LINKER_PATH;
+  }
+
+  return SD_ERROR_NONE;
 }
 
 // Pretend to be a kernel and mmap linker into the address space of this program
-static void sd_mmap_linker(char* linker_path, sd_u8** mmap, sd_u64* e_entry) {
+static sd_error sd_mmap_linker(char* linker_path, sd_u8** mmap, sd_u64* e_entry) {
   sd_i32 linker_file_fd = sd_open(linker_path, O_RDONLY | O_CLOEXEC);
+  if (linker_file_fd < 0) {
+    return SD_ERROR_NO_LINKER;
+  }
 
   Elf64_Ehdr ehdr;
-  sd_assert(sd_pread(linker_file_fd, &ehdr, sizeof(ehdr), 0) == sizeof(ehdr));
+  if (sd_pread(linker_file_fd, &ehdr, sizeof(ehdr), 0) != sizeof(ehdr)) {
+    sd_close(linker_file_fd);
+    return SD_ERROR_CANNOT_LOAD_LINKER;
+  }
 
   const sd_u64 linker_phdrs_bytes = ehdr.e_phnum * sizeof(Elf64_Phdr);
   Elf64_Phdr*  linker_phdrs       = __builtin_alloca(linker_phdrs_bytes);
-  sd_assert(sd_pread(linker_file_fd, linker_phdrs, linker_phdrs_bytes, ehdr.e_phoff) == linker_phdrs_bytes);
+  if (sd_pread(linker_file_fd, linker_phdrs, linker_phdrs_bytes, ehdr.e_phoff) != linker_phdrs_bytes) {
+    sd_close(linker_file_fd);
+    return SD_ERROR_CANNOT_LOAD_LINKER;
+  }
 
   sd_u64 min_va = ~0;
   sd_u64 max_va = 0;
@@ -241,7 +285,10 @@ static void sd_mmap_linker(char* linker_path, sd_u8** mmap, sd_u64* e_entry) {
   sd_u8* linker_mmap = sd_mmap((void*)min_va, va,
                                PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
                                -1, 0);
-  sd_assert(0 < (sd_i64)linker_mmap);
+  if ((sd_i64)linker_mmap < 0) {
+    sd_close(linker_file_fd);
+    return SD_ERROR_CANNOT_LOAD_LINKER;
+  }
   sd_munmap(linker_mmap, va);
 
   for (Elf64_Phdr* i = linker_phdrs; i < linker_phdrs + ehdr.e_phnum; i += 1) {
@@ -251,9 +298,23 @@ static void sd_mmap_linker(char* linker_path, sd_u8** mmap, sd_u64* e_entry) {
       sd_i64 sz  = sd_align_up_64(i->p_memsz + off, 4096);
 
       sd_u8* map = sd_mmap((void*)beg, sz, PROT_WRITE, MAP_FIXED | MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-      sd_assert(0 < (sd_i64)map);
+      if ((sd_i64)map < 0) {
+        for (Elf64_Phdr* j = linker_phdrs; i != j; j += 1) {
+            sd_u64 off = i->p_vaddr & (4096 - 1);
+            sd_u64 beg = (sd_u64)(linker_mmap + sd_align_down_64(i->p_vaddr, 4096));
+            sd_i64 sz  = sd_align_up_64(i->p_memsz + off, 4096);
+            sd_munmap((void*)beg, sz);
+        }
 
-      sd_assert(sd_pread(linker_file_fd, map + off, i->p_filesz, i->p_offset) == i->p_filesz);
+        sd_close(linker_file_fd);
+        return SD_ERROR_CANNOT_LOAD_LINKER;
+      }
+
+      if (sd_pread(linker_file_fd, map + off, i->p_filesz, i->p_offset) != i->p_filesz) {
+        sd_close(linker_file_fd);
+        return SD_ERROR_CANNOT_LOAD_LINKER;
+      }
+
       sd_i32 prot = 0;
       if (i->p_flags & PF_R) prot |= PROT_READ;
       if (i->p_flags & PF_W) prot |= PROT_WRITE;
@@ -265,16 +326,61 @@ static void sd_mmap_linker(char* linker_path, sd_u8** mmap, sd_u64* e_entry) {
 
   *mmap    = linker_mmap;
   *e_entry = ehdr.e_entry;
+
+  return SD_ERROR_NONE;
+}
+
+
+void sd_stage2_bypass(sd_u64* sp, sd_error e) {
+    sd_got.success = 0;
+    sd_got.error   = e;
+#if defined(SD_MUSL)
+    // musl exposes these even though not as a part of official API. Calling
+    // this takes care of all the musl init and calling of the actual `main`
+    extern int __libc_start_main(int (*)(int, char**, char**), int, char**,
+                                  void (*)(void), void (*)(void), void*);
+    extern void _init(void) __attribute__((weak));
+    extern void _fini(void) __attribute__((weak));
+
+    sd_u64  argc = *(sd_u64*)sp;
+    sd_u64* argv = (sd_u64*)(sp + 1);
+    __libc_start_main((int (*)(int, char**, char**))main,
+                      (int)argc, (char**)argv,
+                      _init, _fini, 0);
+#else
+  #if defined(__x86_64__)
+    __asm__ __volatile__(
+      "mov %1,%%rsp\n"
+      "jmpq *%0\n"
+      :
+      : "S"(sd_stage2_entry), "d"((sd_u64)sp)
+      : "memory");
+  #elif defined(__aarch64__)
+    __asm__ __volatile__(
+        "mov sp, %1\n"
+        "br %0\n"
+        :
+        : "r"(sd_stage2_entry), "r"((sd_u64)sp)
+        : "memory");
+  #endif
+#endif
+  __builtin_unreachable();
 }
 
 void sd_stage1_entry(sd_u64* sp) {
   char linker_path [128] = {0};
-  sd_read_linker_path(linker_path);
+  sd_error e = sd_read_linker_path(linker_path);
+  if (e != SD_ERROR_NONE) {
+    sd_stage2_bypass(sp, e);
+  }
   sd_u32 linker_path_len = sd_strlen(linker_path);
 
   sd_u8* linker_map;
   sd_u64 e_entry;
-  sd_mmap_linker(linker_path, &linker_map, &e_entry);
+  e = sd_mmap_linker(linker_path, &linker_map, &e_entry);
+  if (e != SD_ERROR_NONE) {
+    sd_stage2_bypass(sp, e);
+  }
 
   // The permanent data is stored on the stack as tightly as possible.
   // The layout will look like this:
