@@ -41,7 +41,8 @@ int main(int argc, char** argv)
 > code.
 
 The access to the `dlopen` and other functions just access the `sd_got` global.
-There is also a `SD_RTLD_NOW` macro already defined to avoid including additional headers.
+There are also a `SD_RTLD_NOW` and `SD_RTLD_LAZY` macros already defined to
+avoid including additional headers.
 
 ```c
 void* libc = sd_got.dlopen("libc.so.6", SD_RTLD_NOW);

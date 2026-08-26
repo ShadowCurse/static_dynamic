@@ -9,6 +9,46 @@ typedef unsigned char      sd_u8;
 typedef unsigned           sd_u32;
 typedef unsigned long long sd_u64;
 
+#define SD_RTLD_LAZY 0x0001
+#define SD_RTLD_NOW  0x0002
+typedef void* (*sd_dlopen_fn)(const char *path, int flags);;
+typedef void* (*sd_dlsym_fn)(void *restrict handle, const char *restrict symbol);
+typedef int   (*sd_dlclose_fn)(void *handle);
+typedef char* (*sd_dlerror_fn)(void);
+
+typedef enum sd_u64 {
+  SD_ERROR_NONE,
+  SD_ERROR_NO_BOUNCE_BINARY,
+  SD_ERROR_CANNOT_READ_BOUNCE_BINARY,
+  SD_ERROR_NO_LINKER_PATH,
+  SD_ERROR_NO_LINKER,
+  SD_ERROR_CANNOT_LOAD_LINKER,
+} sd_error;
+
+typedef union {
+  struct {
+    sd_dlopen_fn  dlopen;
+    sd_dlsym_fn   dlsym;
+    sd_dlclose_fn dlclose;
+    sd_dlerror_fn dlerror;
+  };
+  struct {
+    sd_u64        success;
+    sd_error      error;
+    sd_u64        _padding1;
+    sd_u64        _padding2;
+  };
+} sd_got_t;
+
+// This global acts a role of a `got` table (hence the name), so any references to the `got`
+// down bellow are references for this global. Here the linker will write
+// function pointers from the loaded `libc`.
+sd_got_t sd_got;
+
+extern int main(int argc, char** argv);
+
+// ------------------------------------------------
+
 #if defined(__x86_64__)
   static inline sd_u64 sd_syscall1(sd_u64 n, sd_u64 a0) {
     sd_u64 result;
@@ -22,13 +62,15 @@ typedef unsigned long long sd_u64;
   }
   static inline sd_u64 sd_syscall3(sd_u64 n, sd_u64 a0, sd_u64 a1, sd_u64 a2) {
     sd_u64 result;
-    __asm__ __volatile__("syscall" : "=a"(result) : "a"(n), "D"(a0), "S"(a1), "d"(a2): "rcx", "r11", "memory");
+    __asm__ __volatile__("syscall" : "=a"(result) : "a"(n), "D"(a0), "S"(a1), "d"(a2): "rcx", "r11",
+                         "memory");
     return result;
   }
   static inline sd_u64 sd_syscall4(sd_u64 n, sd_u64 a0, sd_u64 a1, sd_u64 a2, sd_u64 a3) {
     sd_u64 result;
     register sd_u64 r10 __asm__("r10") = a3;
-    __asm__ __volatile__("syscall" : "=a"(result) : "a"(n), "D"(a0), "S"(a1), "d"(a2), "r"(r10) : "rcx", "r11", "memory");
+    __asm__ __volatile__("syscall" : "=a"(result) : "a"(n), "D"(a0), "S"(a1), "d"(a2), "r"(r10) :
+                         "rcx", "r11", "memory");
     return result;
   }
   static inline sd_u64 sd_syscall6(sd_u64 n, sd_u64 a0, sd_u64 a1, sd_u64 a2, sd_u64 a3, sd_u64 a4, sd_u64 a5) {
@@ -36,7 +78,8 @@ typedef unsigned long long sd_u64;
     register sd_u64 r10 __asm__("r10") = a3;
     register sd_u64 r8  __asm__("r8") = a4;
     register sd_u64 r9  __asm__("r9") = a5;
-    __asm__ __volatile__("syscall" : "=a"(result) : "a"(n), "D"(a0), "S"(a1), "d"(a2), "r"(r10), "r"(r8), "r"(r9) : "rcx", "r11", "memory");
+    __asm__ __volatile__("syscall" : "=a"(result) : "a"(n), "D"(a0), "S"(a1), "d"(a2), "r"(r10), "r"(r8),
+                         "r"(r9) : "rcx", "r11", "memory");
     return result;
   }
 #elif defined(__aarch64__)
@@ -103,7 +146,8 @@ static inline int sd_mprotect(void* addr, sd_u64 length, sd_i32 prot) {
   return (int)sd_syscall3(SYS_mprotect, (sd_u64)addr, (sd_u64)length, (sd_u64)prot);
 }
 static inline void* sd_mmap(void *addr, sd_u64 length, int prot, int flags, int fd, sd_u64 offset) {
-  return (void *)sd_syscall6(SYS_mmap, (sd_u64)addr, (sd_u64)length, (sd_u64)prot, (sd_u64)flags, (sd_u64)fd, (sd_u64)offset);
+  return (void *)sd_syscall6(SYS_mmap, (sd_u64)addr, (sd_u64)length, (sd_u64)prot, (sd_u64)flags,
+                             (sd_u64)fd, (sd_u64)offset);
 }
 
 // Compilers can decide to replace this function with a stdlib `strlen` call if
@@ -141,43 +185,6 @@ static sd_u64 sd_offset_from_alignment_64(sd_u64 v, sd_u64 a) {
 static void sd_assert(sd_i32 v) {
   if (!v) __builtin_trap();
 }
-
-#define SD_RTLD_NOW 0x0002
-typedef void* (*sd_dlopen_fn)(const char *path, int flags);;
-typedef void* (*sd_dlsym_fn)(void *restrict handle, const char *restrict symbol);
-typedef int   (*sd_dlclose_fn)(void *handle);
-typedef char* (*sd_dlerror_fn)(void);
-
-typedef enum sd_u64 {
-  SD_ERROR_NONE,
-  SD_ERROR_NO_BOUNCE_BINARY,
-  SD_ERROR_CANNOT_READ_BOUNCE_BINARY,
-  SD_ERROR_NO_LINKER_PATH,
-  SD_ERROR_NO_LINKER,
-  SD_ERROR_CANNOT_LOAD_LINKER,
-} sd_error;
-
-typedef union {
-  struct {
-    sd_dlopen_fn  dlopen;
-    sd_dlsym_fn   dlsym;
-    sd_dlclose_fn dlclose;
-    sd_dlerror_fn dlerror;
-  };
-  struct {
-    sd_u64        success;
-    sd_error      error;
-    sd_u64        _padding1;
-    sd_u64        _padding2;
-  };
-} sd_got_t;
-
-// This global acts a role of a `got` table (hence the name), so any references to the `got`
-// down bellow are references for this global. Here the linker will write
-// function pointers from the loaded `libc`.
-sd_got_t sd_got;
-
-extern int main(int argc, char** argv);
 
 // Do this weird definition to silence "used but not defined" warnings. The
 // reason for defining a function with top level `asm` block is same as for the
