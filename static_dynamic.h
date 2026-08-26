@@ -134,6 +134,10 @@ static sd_u64 sd_align_down_64(sd_u64 v, sd_u64 a) {
   return v & ~(a - 1);
 }
 
+static sd_u64 sd_offset_from_alignment_64(sd_u64 v, sd_u64 a) {
+  return v & (a - 1);
+}
+
 static void sd_assert(sd_i32 v) {
   if (!v) __builtin_trap();
 }
@@ -251,7 +255,7 @@ static sd_error sd_read_linker_path(char* linker_path) {
 }
 
 // Pretend to be a kernel and mmap linker into the address space of this program
-static sd_error sd_mmap_linker(char* linker_path, sd_u8** mmap, sd_u64* e_entry) {
+static sd_error sd_mmap_linker(char* linker_path, sd_u32 page_size, sd_u8** mmap, sd_u64* e_entry) {
   sd_i32 linker_file_fd = sd_open(linker_path, O_RDONLY | O_CLOEXEC);
   if (linker_file_fd < 0) {
     return SD_ERROR_NO_LINKER;
@@ -278,8 +282,8 @@ static sd_error sd_mmap_linker(char* linker_path, sd_u8** mmap, sd_u64* e_entry)
       max_va = (i->p_vaddr + i->p_memsz) < max_va     ? max_va : (i->p_vaddr + i->p_memsz);
     }
   }
-  min_va    = sd_align_down_64(min_va, 4096);
-  max_va    = sd_align_up_64(max_va, 4096);
+  min_va    = sd_align_down_64(min_va, page_size);
+  max_va    = sd_align_up_64(max_va, page_size);
   sd_u64 va = max_va - min_va;
 
   sd_u8* linker_mmap = sd_mmap((void*)min_va, va,
@@ -293,16 +297,16 @@ static sd_error sd_mmap_linker(char* linker_path, sd_u8** mmap, sd_u64* e_entry)
 
   for (Elf64_Phdr* i = linker_phdrs; i < linker_phdrs + ehdr.e_phnum; i += 1) {
     if (i->p_type == PT_LOAD) {
-      sd_u64 off = i->p_vaddr & (4096 - 1);
-      sd_u64 beg = (sd_u64)(linker_mmap + sd_align_down_64(i->p_vaddr, 4096));
-      sd_i64 sz  = sd_align_up_64(i->p_memsz + off, 4096);
+      sd_u64 off = sd_offset_from_alignment_64(i->p_vaddr, page_size);
+      sd_u64 beg = (sd_u64)(linker_mmap + sd_align_down_64(i->p_vaddr, page_size));
+      sd_i64 sz  = sd_align_up_64(i->p_memsz + off, page_size);
 
       sd_u8* map = sd_mmap((void*)beg, sz, PROT_WRITE, MAP_FIXED | MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
       if ((sd_i64)map < 0) {
         for (Elf64_Phdr* j = linker_phdrs; i != j; j += 1) {
-            sd_u64 off = i->p_vaddr & (4096 - 1);
-            sd_u64 beg = (sd_u64)(linker_mmap + sd_align_down_64(i->p_vaddr, 4096));
-            sd_i64 sz  = sd_align_up_64(i->p_memsz + off, 4096);
+            sd_u64 off = sd_offset_from_alignment_64(i->p_vaddr, page_size);
+            sd_u64 beg = (sd_u64)(linker_mmap + sd_align_down_64(i->p_vaddr, page_size));
+            sd_i64 sz  = sd_align_up_64(i->p_memsz + off, page_size);
             sd_munmap((void*)beg, sz);
         }
 
@@ -367,45 +371,35 @@ void sd_stage2_bypass(sd_u64* sp, sd_error e) {
   __builtin_unreachable();
 }
 
+// stage1 performs the search for the dynamic linker path, loads the linker in the virtual
+// address space of this process, prepares needed data for the linker and lastly jumps into it.
+//
+// Since the data for the linker needs to be stored permanently somewhere, we just store it
+// on the program stack outside any function frame. The stack allocation happen in the `_start`.
+//
+// The layout of memory will look like this:
+//
+// | ...
+// | original argc
+// | original argc
+// |--------------- <- This where `sp` argument points to. This is an original `sp` given to us by the kernel.
+// |                   It will also be used if linker loading fails in any way.
+// | new phdrs
+// | new dyn
+// | new strtab
+// | new symtab
+// | new rela
+// | new interp
+// |---------------
+// | new auxv
+// | new envp
+// | new argv
+// | new argc
+// |--------------- <- This is where `sp` will point to when we jump to the linker. This way all data above
+// |                   `sp` will remain untouched.
 void sd_stage1_entry(sd_u64* sp) {
-  char linker_path [128] = {0};
-  sd_error e = sd_read_linker_path(linker_path);
-  if (e != SD_ERROR_NONE) {
-    sd_stage2_bypass(sp, e);
-  }
-  sd_u32 linker_path_len = sd_strlen(linker_path);
-
-  sd_u8* linker_map;
-  sd_u64 e_entry;
-  e = sd_mmap_linker(linker_path, &linker_map, &e_entry);
-  if (e != SD_ERROR_NONE) {
-    sd_stage2_bypass(sp, e);
-  }
-
-  // The permanent data is stored on the stack as tightly as possible.
-  // The layout will look like this:
-  //
-  // | ...
-  // | original argc
-  // | original argc
-  // |---------------
-  // | new phdrs
-  // | new dyn
-  // | new strtab
-  // | new symtab
-  // | new rela
-  // | new interp
-  // |---------------
-  // | new auxv
-  // | new envp
-  // | new argv
-  // | new argc
-  // |---------------
-  // | actual stack for this function call, for the linker and for the future `main`
-  // | ...
-  void* original_sp = (void*)sp;
-  sd_u64  orig_argc = *(sd_u64*)original_sp;
-  sd_u64* orig_argv = (sd_u64*)(original_sp + sizeof(sd_u64));
+  sd_u64  orig_argc = *(sd_u64*)sp;
+  sd_u64* orig_argv = (sd_u64*)(sp + 1);
   sd_u64* orig_envp = orig_argv + orig_argc + 1;
   while (*orig_envp != 0) {
     orig_envp += 1;
@@ -419,6 +413,7 @@ void sd_stage1_entry(sd_u64* sp) {
   // also remember original phdrs since they will need to be copied
   Elf64_Phdr*   orig_phdrs;
   sd_u32        orig_n_phdrs;
+  sd_u32        page_size;
   sd_u32        n_auxv = 0;
   Elf64_auxv_t* orig_auxv_copy = orig_auxv;
   while (orig_auxv->a_type != AT_NULL) {
@@ -426,6 +421,8 @@ void sd_stage1_entry(sd_u64* sp) {
       orig_phdrs = (Elf64_Phdr*)orig_auxv->a_un.a_val;
     } else if (orig_auxv->a_type == AT_PHNUM) {
       orig_n_phdrs = (sd_u32)orig_auxv->a_un.a_val;
+    } else if (orig_auxv->a_type == AT_PAGESZ) {
+      page_size = (sd_u32)orig_auxv->a_un.a_val;
     }
     orig_auxv += 1;
     n_auxv    += 1;
@@ -433,12 +430,26 @@ void sd_stage1_entry(sd_u64* sp) {
   n_auxv   += 1;
   orig_auxv = orig_auxv_copy;
 
+  char linker_path [128] = {0};
+  sd_error e = sd_read_linker_path(linker_path);
+  if (e != SD_ERROR_NONE) {
+    sd_stage2_bypass(sp, e);
+  }
+  sd_u32 linker_path_len = sd_strlen(linker_path);
+
+  sd_u8* linker_map;
+  sd_u64 e_entry;
+  e = sd_mmap_linker(linker_path, page_size, &linker_map, &e_entry);
+  if (e != SD_ERROR_NONE) {
+    sd_stage2_bypass(sp, e);
+  }
+
   // Start setting up the required structures starting from the original sp
   // in backwards direction. This way all data is tightly packed just bellow original sp
   // wasting minimum amount of space.
   sd_u32      n_phdrs     = orig_n_phdrs + 2;
   sd_u32      phdrs_bytes = n_phdrs * sizeof(Elf64_Phdr);
-  Elf64_Phdr* phdrs       = (Elf64_Phdr*)sd_align_down_64((sd_u64)original_sp - phdrs_bytes, 8);
+  Elf64_Phdr* phdrs       = (Elf64_Phdr*)sd_align_down_64((sd_u64)sp - phdrs_bytes, 8);
 
   sd_u64         n_dyn     = 9;
   sd_u32         dyn_bytes = n_dyn * sizeof(Elf64_Dyn);
