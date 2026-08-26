@@ -182,10 +182,6 @@ static sd_u64 sd_offset_from_alignment_64(sd_u64 v, sd_u64 a) {
   return v & (a - 1);
 }
 
-static void sd_assert(sd_i32 v) {
-  if (!v) __builtin_trap();
-}
-
 // Do this weird definition to silence "used but not defined" warnings. The
 // reason for defining a function with top level `asm` block is same as for the
 // `_start` symbol bellow.
