@@ -1,3 +1,5 @@
 .direnv
 .envrc
 static_dynamic
+.zig-cache
+zig-out
