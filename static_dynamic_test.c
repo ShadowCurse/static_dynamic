@@ -1,6 +1,7 @@
 #include "static_dynamic.h"
 #include <stdio.h>
 #include <sys/auxv.h>
+#include <sys/syscall.h>
 #include "raylib.h"
 
 typedef int   (*printf_fn)(const char *restrict format, ...);
@@ -30,8 +31,8 @@ int main(int argc, char** argv) {
 #endif
 
   void* libc   = sd_got.dlopen("libc.so.6", SD_RTLD_NOW);
-  void *libm   = sd_got.dlopen("libm.so.6", SD_RTLD_NOW);
-  void *raylib = sd_got.dlopen("libraylib.so", SD_RTLD_NOW);
+  void* libm   = sd_got.dlopen("libm.so.6", SD_RTLD_NOW);
+  void* raylib = sd_got.dlopen("libraylib.so", SD_RTLD_NOW);
 
   printf_fn printf2 = (printf_fn)sd_got.dlsym(libc, "printf");
 
@@ -39,13 +40,13 @@ int main(int argc, char** argv) {
   for (sd_u32 i = 0; i < argc; i += 1) {
     printf2("argv[%d] %s\n", i, argv[i]);
   }
-  printf2("thread local a %d\n", tl_a );
+  printf2("thread local a %d\n", tl_a);
 
   printf2("libc.so is %p\n", libc);
   printf2("libm.so is %p\n", libm);
   printf2("raylib.so is %p\n", raylib);
 
-  void *libfoo = sd_got.dlopen("libfoo.so", SD_RTLD_NOW);
+  void* libfoo = sd_got.dlopen("libfoo.so", SD_RTLD_NOW);
   printf2("libfoo: %s\n", sd_got.dlerror());
 
   if (libm && raylib) {

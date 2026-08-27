@@ -1,8 +1,4 @@
-#include <elf.h>          // Elf64_{Ehdr,Phdr,auxv_t}
-#include <fcntl.h>        // O_{RDONLY,CLOEXEC}
-#include <sys/mman.h>     // MAP_{FIXED,PRIVATE,ANONYMOUS}, PROT_{NONE,READ,WRITE,EXEC}
-#include <sys/syscall.h>  // SYS_*
-
+typedef unsigned short     sd_u16;
 typedef signed long        sd_i32;
 typedef signed long long   sd_i64;
 typedef unsigned char      sd_u8;
@@ -46,6 +42,154 @@ typedef union {
 sd_got_t sd_got;
 
 extern int main(int argc, char** argv);
+
+// Copy all needed defines/structs from headers since not all compilers might
+// provide them. All of these are part of the stable ABI, so they will not
+// change over time.
+// ------------------------------------------------
+
+#if defined(__x86_64__)
+// arch/x86_64/bits/syscall.h
+  #define SD_SYS_openat   257
+  #define SD_SYS_close      3
+  #define SD_SYS_pread64   17
+  #define SD_SYS_mmap       9
+  #define SD_SYS_mprotect  10
+  #define SD_SYS_munmap    11
+#elif defined(__aarch64__)
+// arch/aarch64/bits/syscall.h
+  #define SD_SYS_openat    56
+  #define SD_SYS_close     57
+  #define SD_SYS_pread64   67
+  #define SD_SYS_mmap     222
+  #define SD_SYS_munmap   215
+  #define SD_SYS_mprotect 226
+#endif
+
+// include/sys/mman.h
+// ------------------------------------------------
+#define SD_PROT_NONE      0
+#define SD_PROT_READ      1
+#define SD_PROT_WRITE     2
+#define SD_PROT_EXEC      4
+
+// include/fcntl.h
+// ------------------------------------------------
+#define SD_AT_FDCWD (-100)
+#define SD_O_RDONLY  00
+
+// include/elf.h
+// ------------------------------------------------
+typedef sd_u16 sd_elf64_half;
+typedef sd_u32 sd_elf64_word;
+typedef sd_i32 sd_elf64_sword;
+typedef sd_u64 sd_elf64_xword;
+typedef sd_i64 sd_elf64_sxword;
+typedef sd_u64 sd_elf64_addr;
+typedef sd_u64 sd_elf64_off;
+typedef sd_u16 sd_elf64_section;
+#define SD_EI_NIDENT (16)
+
+typedef struct {
+  unsigned char e_ident[SD_EI_NIDENT];
+  sd_elf64_half e_type;
+  sd_elf64_half e_machine;
+  sd_elf64_word e_version;
+  sd_elf64_addr e_entry;
+  sd_elf64_off  e_phoff;
+  sd_elf64_off  e_shoff;
+  sd_elf64_word e_flags;
+  sd_elf64_half e_ehsize;
+  sd_elf64_half e_phentsize;
+  sd_elf64_half e_phnum;
+  sd_elf64_half e_shentsize;
+  sd_elf64_half e_shnum;
+  sd_elf64_half e_shstrndx;
+} sd_elf64_ehdr;
+
+typedef struct {
+  sd_elf64_word  p_type;
+  sd_elf64_word  p_flags;
+  sd_elf64_off   p_offset;
+  sd_elf64_addr  p_vaddr;
+  sd_elf64_addr  p_paddr;
+  sd_elf64_xword p_filesz;
+  sd_elf64_xword p_memsz;
+  sd_elf64_xword p_align;
+} sd_elf64_phdr;
+
+typedef struct {
+  sd_u64     a_type;
+  union {
+      sd_u64 a_val;
+  } a_un;
+} sd_elf64_auxv_t;
+
+typedef struct {
+  sd_elf64_sxword    d_tag;
+  union {
+      sd_elf64_xword d_val;
+      sd_elf64_addr  d_ptr;
+  } d_un;
+} sd_elf64_dyn;
+
+typedef struct {
+  sd_elf64_word    st_name;
+  unsigned char st_info;
+  unsigned char st_other;
+  sd_elf64_section st_shndx;
+  sd_elf64_addr    st_value;
+  sd_elf64_xword   st_size;
+} sd_elf64_sym;
+
+typedef struct {
+  sd_elf64_addr   r_offset;
+  sd_elf64_xword  r_info;
+  sd_elf64_sxword r_addend;
+} sd_elf64_rela;
+
+#define SD_AT_NULL   0
+#define SD_AT_PHDR   3
+#define SD_AT_PHNUM  5
+#define SD_AT_PAGESZ 6
+#define SD_AT_BASE   7
+#define SD_AT_ENTRY  9
+
+#define SD_R_X86_64_GLOB_DAT     6
+#define SD_R_AARCH64_GLOB_DAT 1025
+
+#if defined(__x86_64__)
+  #define SD_ARCH_GLOB_DAT SD_R_X86_64_GLOB_DAT
+#elif defined(__aarch64__)
+  #define SD_ARCH_GLOB_DAT SD_R_AARCH64_GLOB_DAT
+#endif
+
+#define SD_DT_NULL     0
+#define SD_DT_NEEDED   1
+#define SD_DT_STRTAB   5
+#define SD_DT_SYMTAB   6
+#define SD_DT_RELA     7
+#define SD_DT_RELASZ   8
+#define SD_DT_RELAENT  9
+#define SD_DT_STRSZ   10
+#define SD_DT_SYMENT  11
+
+#define SD_PT_NULL    0
+#define SD_PT_LOAD    1
+#define SD_PT_DYNAMIC 2
+#define SD_PT_INTERP  3
+#define SD_PT_PHDR    6
+
+#define SD_PF_X (1 << 0)
+#define SD_PF_W (1 << 1)
+#define SD_PF_R (1 << 2)
+
+// include/sys/mman.h
+// ------------------------------------------------
+#define SD_MAP_PRIVATE    0x02
+#define SD_MAP_FIXED      0x10
+#define SD_MAP_ANONYMOUS  0x20
+#define SD_MAP_NORESERVE  0x4000
 
 // ------------------------------------------------
 
@@ -131,22 +275,22 @@ extern int main(int argc, char** argv);
 #endif
 
 static inline int sd_open(const char* filename, int flags) {
-  return (int)sd_syscall4(SYS_openat, (sd_u64)AT_FDCWD, (sd_u64)filename, (sd_u64)flags, (sd_u64)O_RDONLY);
+  return (int)sd_syscall4(SD_SYS_openat, (sd_u64)SD_AT_FDCWD, (sd_u64)filename, (sd_u64)flags, (sd_u64)SD_O_RDONLY);
 }
 static inline int sd_close(int fd) {
-  return (int)sd_syscall1(SYS_close, (sd_u64)fd);
+  return (int)sd_syscall1(SD_SYS_close, (sd_u64)fd);
 }
-static inline sd_u64 sd_pread(int fd, void* buf, size_t count, sd_u64 offset) {
-  return (sd_u64)sd_syscall4(SYS_pread64, (sd_u64)fd, (sd_u64)buf, (sd_u64)count, (sd_u64)offset);
+static inline sd_u64 sd_pread(int fd, void* buf, sd_u64 count, sd_u64 offset) {
+  return (sd_u64)sd_syscall4(SD_SYS_pread64, (sd_u64)fd, (sd_u64)buf, (sd_u64)count, (sd_u64)offset);
 }
 static inline int sd_munmap(void* addr, sd_u64 length) {
-  return (int)sd_syscall2(SYS_munmap, (sd_u64)addr, (sd_u64)length);
+  return (int)sd_syscall2(SD_SYS_munmap, (sd_u64)addr, (sd_u64)length);
 }
 static inline int sd_mprotect(void* addr, sd_u64 length, sd_i32 prot) {
-  return (int)sd_syscall3(SYS_mprotect, (sd_u64)addr, (sd_u64)length, (sd_u64)prot);
+  return (int)sd_syscall3(SD_SYS_mprotect, (sd_u64)addr, (sd_u64)length, (sd_u64)prot);
 }
 static inline void* sd_mmap(void *addr, sd_u64 length, int prot, int flags, int fd, sd_u64 offset) {
-  return (void *)sd_syscall6(SYS_mmap, (sd_u64)addr, (sd_u64)length, (sd_u64)prot, (sd_u64)flags,
+  return (void *)sd_syscall6(SD_SYS_mmap, (sd_u64)addr, (sd_u64)length, (sd_u64)prot, (sd_u64)flags,
                              (sd_u64)fd, (sd_u64)offset);
 }
 
@@ -223,24 +367,24 @@ extern void sd_stage2_entry(void);
 // you can't win them all..
 static sd_error sd_read_linker_path(char* linker_path) {
   char*  file_path = "/bin/sh";
-  sd_i32 file_fd   = sd_open(file_path, O_RDONLY | O_CLOEXEC);
+  sd_i32 file_fd   = sd_open(file_path, SD_O_RDONLY);
   if (file_fd < 0) {
     return SD_ERROR_NO_BOUNCE_BINARY;
   }
 
-  Elf64_Ehdr ehdr;
+  sd_elf64_ehdr ehdr;
   if (sd_pread(file_fd, &ehdr, sizeof(ehdr), 0) != sizeof(ehdr)) {
     sd_close(file_fd);
     return SD_ERROR_CANNOT_READ_BOUNCE_BINARY;
   }
 
-  Elf64_Phdr phdr;
+  sd_elf64_phdr phdr;
   for (sd_i32 i = 0; i < ehdr.e_phnum; i += 1) {
     if (sd_pread(file_fd, &phdr, sizeof(phdr), ehdr.e_phoff + i * sizeof(phdr)) != sizeof(phdr)) {
       sd_close(file_fd);
       return SD_ERROR_CANNOT_READ_BOUNCE_BINARY;
     }
-    if (phdr.p_type == PT_INTERP) {
+    if (phdr.p_type == SD_PT_INTERP) {
       if (sd_pread(file_fd, linker_path, phdr.p_filesz, phdr.p_offset) != phdr.p_filesz) {
         sd_close(file_fd);
         return SD_ERROR_CANNOT_READ_BOUNCE_BINARY;
@@ -250,7 +394,7 @@ static sd_error sd_read_linker_path(char* linker_path) {
   }
   sd_close(file_fd);
 
-  if (phdr.p_type != PT_INTERP) {
+  if (phdr.p_type != SD_PT_INTERP) {
     return SD_ERROR_NO_LINKER_PATH;
   }
 
@@ -259,19 +403,19 @@ static sd_error sd_read_linker_path(char* linker_path) {
 
 // Pretend to be a kernel and mmap linker into the address space of this program
 static sd_error sd_mmap_linker(char* linker_path, sd_u32 page_size, sd_u8** mmap, sd_u64* e_entry) {
-  sd_i32 linker_file_fd = sd_open(linker_path, O_RDONLY | O_CLOEXEC);
+  sd_i32 linker_file_fd = sd_open(linker_path, SD_O_RDONLY);
   if (linker_file_fd < 0) {
     return SD_ERROR_NO_LINKER;
   }
 
-  Elf64_Ehdr ehdr;
+  sd_elf64_ehdr ehdr;
   if (sd_pread(linker_file_fd, &ehdr, sizeof(ehdr), 0) != sizeof(ehdr)) {
     sd_close(linker_file_fd);
     return SD_ERROR_CANNOT_LOAD_LINKER;
   }
 
-  const sd_u64 linker_phdrs_bytes = ehdr.e_phnum * sizeof(Elf64_Phdr);
-  Elf64_Phdr*  linker_phdrs       = __builtin_alloca(linker_phdrs_bytes);
+  const sd_u64 linker_phdrs_bytes = ehdr.e_phnum * sizeof(sd_elf64_phdr);
+  sd_elf64_phdr*  linker_phdrs       = __builtin_alloca(linker_phdrs_bytes);
   if (sd_pread(linker_file_fd, linker_phdrs, linker_phdrs_bytes, ehdr.e_phoff) != linker_phdrs_bytes) {
     sd_close(linker_file_fd);
     return SD_ERROR_CANNOT_LOAD_LINKER;
@@ -279,8 +423,8 @@ static sd_error sd_mmap_linker(char* linker_path, sd_u32 page_size, sd_u8** mmap
 
   sd_u64 min_va = ~0;
   sd_u64 max_va = 0;
-  for (Elf64_Phdr* i = linker_phdrs; i < linker_phdrs + ehdr.e_phnum; i += 1) {
-    if (i->p_type == PT_LOAD) {
+  for (sd_elf64_phdr* i = linker_phdrs; i < linker_phdrs + ehdr.e_phnum; i += 1) {
+    if (i->p_type == SD_PT_LOAD) {
       min_va =                    min_va < i->p_vaddr ? min_va : i->p_vaddr;
       max_va = (i->p_vaddr + i->p_memsz) < max_va     ? max_va : (i->p_vaddr + i->p_memsz);
     }
@@ -290,7 +434,7 @@ static sd_error sd_mmap_linker(char* linker_path, sd_u32 page_size, sd_u8** mmap
   sd_u64 va = max_va - min_va;
 
   sd_u8* linker_mmap = sd_mmap((void*)min_va, va,
-                               PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+                               SD_PROT_NONE, SD_MAP_PRIVATE | SD_MAP_ANONYMOUS | SD_MAP_NORESERVE,
                                -1, 0);
   if ((sd_i64)linker_mmap < 0) {
     sd_close(linker_file_fd);
@@ -298,15 +442,15 @@ static sd_error sd_mmap_linker(char* linker_path, sd_u32 page_size, sd_u8** mmap
   }
   sd_munmap(linker_mmap, va);
 
-  for (Elf64_Phdr* i = linker_phdrs; i < linker_phdrs + ehdr.e_phnum; i += 1) {
-    if (i->p_type == PT_LOAD) {
+  for (sd_elf64_phdr* i = linker_phdrs; i < linker_phdrs + ehdr.e_phnum; i += 1) {
+    if (i->p_type == SD_PT_LOAD) {
       sd_u64 off = sd_offset_from_alignment_64(i->p_vaddr, page_size);
       sd_u64 beg = (sd_u64)(linker_mmap + sd_align_down_64(i->p_vaddr, page_size));
       sd_i64 sz  = sd_align_up_64(i->p_memsz + off, page_size);
 
-      sd_u8* map = sd_mmap((void*)beg, sz, PROT_WRITE, MAP_FIXED | MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+      sd_u8* map = sd_mmap((void*)beg, sz, SD_PROT_WRITE, SD_MAP_FIXED | SD_MAP_ANONYMOUS | SD_MAP_PRIVATE, -1, 0);
       if ((sd_i64)map < 0) {
-        for (Elf64_Phdr* j = linker_phdrs; i != j; j += 1) {
+        for (sd_elf64_phdr* j = linker_phdrs; i != j; j += 1) {
             sd_u64 off = sd_offset_from_alignment_64(i->p_vaddr, page_size);
             sd_u64 beg = (sd_u64)(linker_mmap + sd_align_down_64(i->p_vaddr, page_size));
             sd_i64 sz  = sd_align_up_64(i->p_memsz + off, page_size);
@@ -323,9 +467,9 @@ static sd_error sd_mmap_linker(char* linker_path, sd_u32 page_size, sd_u8** mmap
       }
 
       sd_i32 prot = 0;
-      if (i->p_flags & PF_R) prot |= PROT_READ;
-      if (i->p_flags & PF_W) prot |= PROT_WRITE;
-      if (i->p_flags & PF_X) prot |= PROT_EXEC;
+      if (i->p_flags & SD_PF_R) prot |= SD_PROT_READ;
+      if (i->p_flags & SD_PF_W) prot |= SD_PROT_WRITE;
+      if (i->p_flags & SD_PF_X) prot |= SD_PROT_EXEC;
       sd_mprotect(map, sz, prot);
     }
   }
@@ -408,23 +552,23 @@ void sd_stage1_entry(sd_u64* sp) {
     orig_envp += 1;
   }
   orig_envp += 1;
-  Elf64_auxv_t* orig_auxv = (Elf64_auxv_t*)orig_envp;
+  sd_elf64_auxv_t* orig_auxv = (sd_elf64_auxv_t*)orig_envp;
   // Restore `orig_envp` since it was used to get to the `orig_auxv`
   orig_envp = orig_argv + orig_argc + 1;
 
   // Read auxv to get ones pointing to entries we need to modify
   // also remember original phdrs since they will need to be copied
-  Elf64_Phdr*   orig_phdrs;
-  sd_u32        orig_n_phdrs;
-  sd_u32        page_size;
-  sd_u32        n_auxv = 0;
-  Elf64_auxv_t* orig_auxv_copy = orig_auxv;
-  while (orig_auxv->a_type != AT_NULL) {
-    if (orig_auxv->a_type == AT_PHDR) {
-      orig_phdrs = (Elf64_Phdr*)orig_auxv->a_un.a_val;
-    } else if (orig_auxv->a_type == AT_PHNUM) {
+  sd_elf64_phdr*   orig_phdrs;
+  sd_u32           orig_n_phdrs;
+  sd_u32           page_size;
+  sd_u32           n_auxv = 0;
+  sd_elf64_auxv_t* orig_auxv_copy = orig_auxv;
+  while (orig_auxv->a_type != SD_AT_NULL) {
+    if (orig_auxv->a_type == SD_AT_PHDR) {
+      orig_phdrs = (sd_elf64_phdr*)orig_auxv->a_un.a_val;
+    } else if (orig_auxv->a_type == SD_AT_PHNUM) {
       orig_n_phdrs = (sd_u32)orig_auxv->a_un.a_val;
-    } else if (orig_auxv->a_type == AT_PAGESZ) {
+    } else if (orig_auxv->a_type == SD_AT_PAGESZ) {
       page_size = (sd_u32)orig_auxv->a_un.a_val;
     }
     orig_auxv += 1;
@@ -450,13 +594,13 @@ void sd_stage1_entry(sd_u64* sp) {
   // Start setting up the required structures starting from the original sp
   // in backwards direction. This way all data is tightly packed just bellow original sp
   // wasting minimum amount of space.
-  sd_u32      n_phdrs     = orig_n_phdrs + 2;
-  sd_u32      phdrs_bytes = n_phdrs * sizeof(Elf64_Phdr);
-  Elf64_Phdr* phdrs       = (Elf64_Phdr*)sd_align_down_64((sd_u64)sp - phdrs_bytes, 8);
+  sd_u32         n_phdrs     = orig_n_phdrs + 2;
+  sd_u32         phdrs_bytes = n_phdrs * sizeof(sd_elf64_phdr);
+  sd_elf64_phdr* phdrs       = (sd_elf64_phdr*)sd_align_down_64((sd_u64)sp - phdrs_bytes, 8);
 
-  sd_u64         n_dyn     = 9;
-  sd_u32         dyn_bytes = n_dyn * sizeof(Elf64_Dyn);
-  Elf64_Dyn* dyn           = (Elf64_Dyn*)sd_align_down_64((sd_u64)phdrs - dyn_bytes, 8);
+  sd_u64        n_dyn     = 9;
+  sd_u32        dyn_bytes = n_dyn * sizeof(sd_elf64_dyn);
+  sd_elf64_dyn* dyn       = (sd_elf64_dyn*)sd_align_down_64((sd_u64)phdrs - dyn_bytes, 8);
 
   // This specifies what library we want and what symbols from it we want.
   // The result will be placed in the `got`
@@ -464,23 +608,23 @@ void sd_stage1_entry(sd_u64* sp) {
   sd_u32 strtab_str_len = sizeof(strtab_str) - 1;
   char*  strtab         = (char*)((sd_u64)dyn - strtab_str_len);
 
-  sd_u32     n_sym        = 5;
-  sd_u32     symtab_bytes = n_sym * sizeof(Elf64_Sym);
-  Elf64_Sym* symtab       = (Elf64_Sym*)sd_align_down_64((sd_u64)strtab - symtab_bytes, 8);
+  sd_u32        n_sym        = 5;
+  sd_u32        symtab_bytes = n_sym * sizeof(sd_elf64_sym);
+  sd_elf64_sym* symtab       = (sd_elf64_sym*)sd_align_down_64((sd_u64)strtab - symtab_bytes, 8);
 
-  sd_u32      n_rela     = sizeof(sd_got_t) / sizeof(void*);
-  sd_u32      rela_bytes = n_rela * sizeof(Elf64_Rela);
-  Elf64_Rela* rela       = (Elf64_Rela*)sd_align_down_64((sd_u64)symtab - rela_bytes, 8);
+  sd_u32         n_rela     = sizeof(sd_got_t) / sizeof(void*);
+  sd_u32         rela_bytes = n_rela * sizeof(sd_elf64_rela);
+  sd_elf64_rela* rela       = (sd_elf64_rela*)sd_align_down_64((sd_u64)symtab - rela_bytes, 8);
 
   char* interp = (char*)((sd_u64)rela - linker_path_len);
 
   // Copy original phdrs as they are except with modification to the PT_PHDR
   // since they are now at a different address
   for (sd_u32 i = 0; i < orig_n_phdrs; i += 1) {
-    if (orig_phdrs[i].p_type == PT_PHDR) {
-      phdrs[i] = (Elf64_Phdr){
-        .p_type   = PT_PHDR,
-        .p_flags  = PF_R,
+    if (orig_phdrs[i].p_type == SD_PT_PHDR) {
+      phdrs[i] = (sd_elf64_phdr){
+        .p_type   = SD_PT_PHDR,
+        .p_flags  = SD_PF_R,
         .p_offset = 0,
         .p_vaddr  = (sd_u64)phdrs,
         .p_paddr  = 0,
@@ -494,19 +638,19 @@ void sd_stage1_entry(sd_u64* sp) {
   }
   // Add new PT_DYNAMIC and PT_INTERP phdrs which the linker will use to get us
   // functions from libc
-  phdrs[orig_n_phdrs] = (Elf64_Phdr){
-      .p_type   = PT_DYNAMIC,
-      .p_flags  = PF_R | PF_W,
+  phdrs[orig_n_phdrs] = (sd_elf64_phdr){
+      .p_type   = SD_PT_DYNAMIC,
+      .p_flags  = SD_PF_R | SD_PF_W,
       .p_offset = 0,
       .p_vaddr  = (sd_u64)dyn,
       .p_paddr  = 0,
-      .p_filesz = n_dyn * sizeof(Elf64_Dyn),
-      .p_memsz  = n_dyn * sizeof(Elf64_Dyn),
+      .p_filesz = n_dyn * sizeof(sd_elf64_dyn),
+      .p_memsz  = n_dyn * sizeof(sd_elf64_dyn),
       .p_align  = 8,
   };
-  phdrs[orig_n_phdrs + 1] = (Elf64_Phdr){
-      .p_type   = PT_INTERP,
-      .p_flags  = PF_R,
+  phdrs[orig_n_phdrs + 1] = (sd_elf64_phdr){
+      .p_type   = SD_PT_INTERP,
+      .p_flags  = SD_PF_R,
       .p_offset = 0,
       .p_vaddr  = (sd_u64)interp,
       .p_paddr  = 0,
@@ -522,20 +666,20 @@ void sd_stage1_entry(sd_u64* sp) {
   sd_u32 strtab_dlclose_name_off = 24;
   sd_u32 strtab_dlerror_name_off = 32;
 
-  dyn[0] = (Elf64_Dyn){ .d_tag = DT_NEEDED,  .d_un.d_val = strtab_libc_off    };
-  dyn[1] = (Elf64_Dyn){ .d_tag = DT_STRTAB,  .d_un.d_val = (sd_u64)strtab     };
-  dyn[2] = (Elf64_Dyn){ .d_tag = DT_STRSZ,   .d_un.d_val = strtab_str_len     };
-  dyn[3] = (Elf64_Dyn){ .d_tag = DT_SYMTAB,  .d_un.d_val = (sd_u64)symtab     };
-  dyn[4] = (Elf64_Dyn){ .d_tag = DT_SYMENT,  .d_un.d_val = sizeof(Elf64_Sym)  };
-  dyn[5] = (Elf64_Dyn){ .d_tag = DT_RELA,    .d_un.d_val = (sd_u64)rela       };
-  dyn[6] = (Elf64_Dyn){ .d_tag = DT_RELASZ,  .d_un.d_val = rela_bytes         };
-  dyn[7] = (Elf64_Dyn){ .d_tag = DT_RELAENT, .d_un.d_val = sizeof(Elf64_Rela) };
-  dyn[8] = (Elf64_Dyn){ .d_tag = DT_NULL,    .d_un.d_val = 0                  };
+  dyn[0] = (sd_elf64_dyn){ .d_tag = SD_DT_NEEDED,  .d_un.d_val = strtab_libc_off    };
+  dyn[1] = (sd_elf64_dyn){ .d_tag = SD_DT_STRTAB,  .d_un.d_val = (sd_u64)strtab     };
+  dyn[2] = (sd_elf64_dyn){ .d_tag = SD_DT_STRSZ,   .d_un.d_val = strtab_str_len     };
+  dyn[3] = (sd_elf64_dyn){ .d_tag = SD_DT_SYMTAB,  .d_un.d_val = (sd_u64)symtab     };
+  dyn[4] = (sd_elf64_dyn){ .d_tag = SD_DT_SYMENT,  .d_un.d_val = sizeof(sd_elf64_sym)  };
+  dyn[5] = (sd_elf64_dyn){ .d_tag = SD_DT_RELA,    .d_un.d_val = (sd_u64)rela       };
+  dyn[6] = (sd_elf64_dyn){ .d_tag = SD_DT_RELASZ,  .d_un.d_val = rela_bytes         };
+  dyn[7] = (sd_elf64_dyn){ .d_tag = SD_DT_RELAENT, .d_un.d_val = sizeof(sd_elf64_rela) };
+  dyn[8] = (sd_elf64_dyn){ .d_tag = SD_DT_NULL,    .d_un.d_val = 0                  };
 
   sd_memcpy(strtab, strtab_str, strtab_str_len);
 
-  symtab[0] = (Elf64_Sym){0};
-  symtab[1] = (Elf64_Sym){
+  symtab[0] = (sd_elf64_sym){0};
+  symtab[1] = (sd_elf64_sym){
     .st_name  = strtab_dlopen_name_off,
     .st_info  = 0x12,
     .st_other = 0,
@@ -543,7 +687,7 @@ void sd_stage1_entry(sd_u64* sp) {
     .st_value = 0,
     .st_size  = 0
   };
-  symtab[2] = (Elf64_Sym){
+  symtab[2] = (sd_elf64_sym){
     .st_name  = strtab_dlsym_name_off,
     .st_info  = 0x12,
     .st_other = 0,
@@ -551,7 +695,7 @@ void sd_stage1_entry(sd_u64* sp) {
     .st_value = 0,
     .st_size  = 0
   };
-  symtab[3] = (Elf64_Sym){
+  symtab[3] = (sd_elf64_sym){
     .st_name  = strtab_dlclose_name_off,
     .st_info  = 0x12,
     .st_other = 0,
@@ -559,7 +703,7 @@ void sd_stage1_entry(sd_u64* sp) {
     .st_value = 0,
     .st_size  = 0
   };
-  symtab[4] = (Elf64_Sym){
+  symtab[4] = (sd_elf64_sym){
     .st_name  = strtab_dlerror_name_off,
     .st_info  = 0x12,
     .st_other = 0,
@@ -568,29 +712,23 @@ void sd_stage1_entry(sd_u64* sp) {
     .st_size  = 0
   };
 
-#if defined(__x86_64__)
-  #define SD_ARCH_GLOB_DAT R_X86_64_GLOB_DAT
-#elif defined(__aarch64__)
-  #define SD_ARCH_GLOB_DAT  R_AARCH64_GLOB_DAT
-#endif
-
   // Tell the linker where to write function pointers inside `got` table
-  rela[0] = (Elf64_Rela){
+  rela[0] = (sd_elf64_rela){
     .r_offset = (sd_u64)(&sd_got) + 0 * sizeof(sd_u64),
     .r_info   = (sd_u64)1 << 32 | SD_ARCH_GLOB_DAT ,
     .r_addend = 0
   };
-  rela[1] = (Elf64_Rela){
+  rela[1] = (sd_elf64_rela){
     .r_offset = (sd_u64)(&sd_got) + 1 * sizeof(sd_u64),
     .r_info   = (sd_u64)2 << 32 | SD_ARCH_GLOB_DAT ,
     .r_addend = 0
   };
-  rela[2] = (Elf64_Rela){
+  rela[2] = (sd_elf64_rela){
     .r_offset = (sd_u64)(&sd_got) + 2 * sizeof(sd_u64),
     .r_info   = (sd_u64)3 << 32 | SD_ARCH_GLOB_DAT ,
     .r_addend = 0
   };
-  rela[3] = (Elf64_Rela){
+  rela[3] = (sd_elf64_rela){
     .r_offset = (sd_u64)(&sd_got) + 3 * sizeof(sd_u64),
     .r_info   = (sd_u64)4 << 32 | SD_ARCH_GLOB_DAT ,
     .r_addend = 0
@@ -601,7 +739,7 @@ void sd_stage1_entry(sd_u64* sp) {
   // The stack needs to be 16 byte aligned, so calculate and subtract the
   // total number of bytes needed for everything so the resulting address can
   // be easily aligned
-  sd_u32 auxv_bytes  = n_auxv * sizeof(Elf64_auxv_t);
+  sd_u32 auxv_bytes  = n_auxv * sizeof(sd_elf64_auxv_t);
   sd_u32 n_env       = (sd_u64*)orig_auxv - orig_envp - 1;
   sd_u32 env_bytes   = (n_env + 1) * sizeof(sd_u64);
   sd_u32 n_argv      = orig_argc;
@@ -609,10 +747,10 @@ void sd_stage1_entry(sd_u64* sp) {
   sd_u32 argc_bytes  = sizeof(sd_u64);
   sd_u32 total_bytes = auxv_bytes + env_bytes + argv_bytes + argc_bytes;
 
-  sd_u64* argc       = (sd_u64*)sd_align_down_64((sd_u64)interp - total_bytes, 16);
-  sd_u64* argv       = argc + 1;
-  sd_u64* envp       = argv + n_argv + 1;
-  Elf64_auxv_t* auxv = (Elf64_auxv_t*)(envp + n_env + 1);
+  sd_u64* argc          = (sd_u64*)sd_align_down_64((sd_u64)interp - total_bytes, 16);
+  sd_u64* argv          = argc + 1;
+  sd_u64* envp          = argv + n_argv + 1;
+  sd_elf64_auxv_t* auxv = (sd_elf64_auxv_t*)(envp + n_env + 1);
 
   // Keep the arguments as they were passed to the original program but
   // add one additional argument which is a pointer to the `got` table
@@ -625,22 +763,22 @@ void sd_stage1_entry(sd_u64* sp) {
   sd_memcpy((char*)envp, (char*)orig_envp, n_env * sizeof(sd_u64));
   envp[n_env] = 0x0;
 
-  while (orig_auxv->a_type != AT_NULL) {
-    if (orig_auxv->a_type == AT_PHDR) {
-      *auxv = (Elf64_auxv_t){ .a_type = AT_PHDR,  .a_un.a_val = (sd_u64)phdrs            };
-    } else if (orig_auxv->a_type == AT_PHNUM) {
-      *auxv = (Elf64_auxv_t){ .a_type = AT_PHNUM, .a_un.a_val = n_phdrs                  };
-    } else if (orig_auxv->a_type == AT_ENTRY) {
-      *auxv = (Elf64_auxv_t){ .a_type = AT_ENTRY, .a_un.a_val = (sd_u64)&sd_stage2_entry };
-    } else if (orig_auxv->a_type == AT_BASE) {
-      *auxv = (Elf64_auxv_t){ .a_type = AT_BASE,  .a_un.a_val = (sd_u64)linker_map       };
+  while (orig_auxv->a_type != SD_AT_NULL) {
+    if (orig_auxv->a_type == SD_AT_PHDR) {
+      *auxv = (sd_elf64_auxv_t){ .a_type = SD_AT_PHDR,  .a_un.a_val = (sd_u64)phdrs            };
+    } else if (orig_auxv->a_type == SD_AT_PHNUM) {
+      *auxv = (sd_elf64_auxv_t){ .a_type = SD_AT_PHNUM, .a_un.a_val = (sd_u64)n_phdrs          };
+    } else if (orig_auxv->a_type == SD_AT_ENTRY) {
+      *auxv = (sd_elf64_auxv_t){ .a_type = SD_AT_ENTRY, .a_un.a_val = (sd_u64)&sd_stage2_entry };
+    } else if (orig_auxv->a_type == SD_AT_BASE) {
+      *auxv = (sd_elf64_auxv_t){ .a_type = SD_AT_BASE,  .a_un.a_val = (sd_u64)linker_map       };
     } else {
       *auxv = *orig_auxv;
     }
     orig_auxv += 1;
     auxv      += 1;
   }
-  *auxv =     (Elf64_auxv_t){ .a_type = AT_NULL,  .a_un.a_val = (sd_u64)0                };
+  *auxv     = (sd_elf64_auxv_t){ .a_type = SD_AT_NULL,  .a_un.a_val = (sd_u64)0                };
 
   sd_u64 linker_entry = (sd_u64)(linker_map + e_entry);
 
