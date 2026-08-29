@@ -102,9 +102,18 @@ All you need to do is to add C compilation file to your root module:
 const sd_c = b.addWriteFiles().add("static_dynamic.c",
     \\#include "static_dynamic.h"
 );
-mod.addCSourceFile(.{ .file = sd_c });
+mod.addCSourceFile(.{
+    .file = sd_c,
+    .flags = &[_][]const u8{ "-nostartfiles", "-nodefaultlibs", "-nostdlib", "-fno-stack-protector" },
+});
 mod.addIncludePath(b.path("."));
 ```
+
+> [!NOTE]
+>
+> Linking with `musl` does not work. Compiling with `link_libc` and
+> `-Dtarget=x86_64-linux-musl` creates a symbol collision since Zig linkes
+> `crt1.o` which defines it's own `_start`
 
 #### Example
 
