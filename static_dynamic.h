@@ -1,3 +1,6 @@
+// User API
+// ------------------------------------------------
+
 typedef unsigned short     sd_u16;
 typedef signed long        sd_i32;
 typedef signed long long   sd_i64;
@@ -19,6 +22,7 @@ typedef enum sd_u64 {
   SD_ERROR_NO_LINKER_PATH,
   SD_ERROR_NO_LINKER,
   SD_ERROR_CANNOT_LOAD_LINKER,
+  SD_ERROR_CANNOT_INIT_TLS,
 } sd_error;
 
 typedef union {
@@ -43,6 +47,25 @@ sd_got_t sd_got;
 
 extern int main(int argc, char** argv);
 
+// Sets the thread pointer and reserves the static TLS block for the main
+// thread. Usually this is done by the dynamic linker, but in case where
+// loading of the dynamic linker failed (sd_got.success == 0), this function
+// needs to be called instead.
+//
+// The function takes `sp` as an argument which is just 8 bytes before `argv`, so the call
+// can look like:
+// ```c
+// sd_c_tls_init((sd_u64*)(argv - 1));
+// ```
+//
+// Do not call this if dynamic loader has already performed all the setup, this
+// will break loaded `libc`.
+__attribute__((unused))
+static int sd_c_tls_init(sd_u64* sp);
+
+// Implementation
+// ------------------------------------------------
+
 // Copy all needed defines/structs from headers since not all compilers might
 // provide them. All of these are part of the stable ABI, so they will not
 // change over time.
@@ -50,12 +73,13 @@ extern int main(int argc, char** argv);
 
 #if defined(__x86_64__)
 // arch/x86_64/bits/syscall.h
-  #define SD_SYS_openat   257
-  #define SD_SYS_close      3
-  #define SD_SYS_pread64   17
-  #define SD_SYS_mmap       9
-  #define SD_SYS_mprotect  10
-  #define SD_SYS_munmap    11
+  #define SD_SYS_openat     257
+  #define SD_SYS_close        3
+  #define SD_SYS_pread64     17
+  #define SD_SYS_mmap         9
+  #define SD_SYS_mprotect    10
+  #define SD_SYS_munmap      11
+  #define SD_SYS_arch_prctl 158
 #elif defined(__aarch64__)
 // arch/aarch64/bits/syscall.h
   #define SD_SYS_openat    56
@@ -64,6 +88,12 @@ extern int main(int argc, char** argv);
   #define SD_SYS_mmap     222
   #define SD_SYS_munmap   215
   #define SD_SYS_mprotect 226
+#endif
+
+// arch/x86/include/uapi/asm/prctl.h
+// ------------------------------------------------
+#if defined(__x86_64__)
+  #define SD_ARCH_SET_FS 0x1002
 #endif
 
 // include/sys/mman.h
@@ -179,6 +209,7 @@ typedef struct {
 #define SD_PT_DYNAMIC 2
 #define SD_PT_INTERP  3
 #define SD_PT_PHDR    6
+#define SD_PT_TLS     7
 
 #define SD_PF_X (1 << 0)
 #define SD_PF_W (1 << 1)
@@ -326,9 +357,90 @@ static sd_u64 sd_offset_from_alignment_64(sd_u64 v, sd_u64 a) {
   return v & (a - 1);
 }
 
-// Do this weird definition to silence "used but not defined" warnings. The
-// reason for defining a function with top level `asm` block is same as for the
-// `_start` symbol bellow.
+static int sd_c_tls_init(sd_u64* sp) {
+  sd_u64  argc = *sp;
+  sd_u64* argv = sp + 1;
+  sd_u64* envp = argv + argc + 1;
+  while (*envp != 0) {
+    envp += 1;
+  }
+  envp += 1;
+  sd_elf64_auxv_t* auxv = (sd_elf64_auxv_t*)envp;
+
+  sd_elf64_phdr* phdrs   = 0;
+  sd_u32         n_phdrs = 0;
+  while (auxv->a_type != SD_AT_NULL) {
+    if (auxv->a_type == SD_AT_PHDR) {
+      phdrs = (sd_elf64_phdr*)auxv->a_un.a_val;
+    } else if (auxv->a_type == SD_AT_PHNUM) {
+      n_phdrs = (sd_u32)auxv->a_un.a_val;
+    }
+    auxv += 1;
+  }
+  if (phdrs == 0) {
+    return SD_ERROR_CANNOT_INIT_TLS;
+  }
+
+  sd_elf64_phdr* tls = 0;
+  for (sd_u32 i = 0; i < n_phdrs; i += 1) {
+    if (phdrs[i].p_type == SD_PT_TLS) {
+      tls = &phdrs[i];
+    }
+  }
+  // The program has no thread locals, so there is nothing to set up.
+  if (tls == 0) {
+    return SD_ERROR_NONE;
+  }
+
+  sd_u64 align  = tls->p_align < 1 ? 1 : tls->p_align;
+  char*  image  = (char*)tls->p_vaddr;
+  // The total memory size is tls->p_memsz, but only tls->p_filesz will be filled. The
+  // rest will be zeroed by the kernel through `mmap`.
+  sd_u32 filesz = (sd_u32)tls->p_filesz;
+
+#if defined(__x86_64__)
+  // Variant II: | TLS block | TCB |
+  //                         ^
+  //                         |
+  //           with the thread pointer at the TCB.
+  sd_u64 block = sd_align_up_64(tls->p_memsz, align);
+  char*  area  = sd_mmap(0, block + align + sizeof(sd_u64), SD_PROT_READ | SD_PROT_WRITE,
+                         SD_MAP_PRIVATE | SD_MAP_ANONYMOUS, -1, 0);
+  if ((sd_i64)area < 0) {
+    return SD_ERROR_CANNOT_INIT_TLS;
+  }
+
+  char*  base = (char*)sd_align_up_64((sd_u64)area, align);
+  sd_u64 tp   = (sd_u64)(base + block);
+  // The ABI TCB of this variant holds a single self referential pointer.
+  *(sd_u64*)tp = tp;
+  sd_memcpy(base, image, filesz);
+  if (sd_syscall2(SD_SYS_arch_prctl, SD_ARCH_SET_FS, tp) != 0) {
+    return SD_ERROR_CANNOT_INIT_TLS;
+  }
+#elif defined(__aarch64__)
+  // Variant I: | TCB | TLS block |
+  //             ^
+  //             |
+  //           with the thread pointer at the TCB.
+  sd_u64 block_off = sd_align_up_64(2 * sizeof(sd_u64), align);
+  char*  area      = sd_mmap(0, block_off + tls->p_memsz + align, SD_PROT_READ | SD_PROT_WRITE,
+                             SD_MAP_PRIVATE | SD_MAP_ANONYMOUS, -1, 0);
+  if ((sd_i64)area < 0) {
+    return SD_ERROR_CANNOT_INIT_TLS;
+  }
+
+  char*  base = (char*)sd_align_up_64((sd_u64)area, align);
+  sd_u64 tp   = (sd_u64)base;
+  // The ABI TCB of this variant holds the DTV pointer and one reserved word.
+  ((sd_u64*)tp)[0] = 0;
+  ((sd_u64*)tp)[1] = 0;
+  sd_memcpy(base + block_off, image, filesz);
+  __asm__ __volatile__("msr tpidr_el0, %0" :: "r"(tp) : "memory");
+#endif
+  return SD_ERROR_NONE;
+}
+
 extern void sd_stage2_entry(void);
 
 #if defined(__x86_64__)
@@ -485,20 +597,6 @@ static sd_error sd_mmap_linker(char* linker_path, sd_u32 page_size, sd_u8** mmap
 void sd_stage2_bypass(sd_u64* sp, sd_error e) {
     sd_got.success = 0;
     sd_got.error   = e;
-#if defined(SD_MUSL)
-    // musl exposes these even though not as a part of official API. Calling
-    // this takes care of all the musl init and calling of the actual `main`
-    extern int __libc_start_main(int (*)(int, char**, char**), int, char**,
-                                  void (*)(void), void (*)(void), void*);
-    extern void _init(void) __attribute__((weak));
-    extern void _fini(void) __attribute__((weak));
-
-    sd_u64  argc = *(sd_u64*)sp;
-    sd_u64* argv = (sd_u64*)(sp + 1);
-    __libc_start_main((int (*)(int, char**, char**))main,
-                      (int)argc, (char**)argv,
-                      _init, _fini, 0);
-#else
   #if defined(__x86_64__)
     __asm__ __volatile__(
       "mov %1,%%rsp\n"
@@ -514,7 +612,6 @@ void sd_stage2_bypass(sd_u64* sp, sd_error e) {
         : "r"(sd_stage2_entry), "r"((sd_u64)sp)
         : "memory");
   #endif
-#endif
   __builtin_unreachable();
 }
 

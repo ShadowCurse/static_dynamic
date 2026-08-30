@@ -19,7 +19,7 @@ pub fn build(b: *std.Build) void {
     );
     mod.addCSourceFile(.{
         .file = sd_c,
-        .flags = &[_][]const u8{ "-nostartfiles", "-nodefaultlibs", "-nostdlib", "-fno-stack-protector" },
+        .flags = &[_][]const u8{ "-fno-stack-protector" },
     });
     mod.addIncludePath(b.path("."));
 

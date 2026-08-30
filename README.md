@@ -11,9 +11,6 @@ using an assumption that on each Linux machine there is a dynamically linked
 this holds on all distributions, this also makes the application linker
 independent.
 
-Since the system `libc` is loaded separately, this means the applications can
-still use statically linked `libc` such as `musl` without issues.
-
 For doing all of the preparatory work, the library needs some space to store
 data required for the dynamic linker to launch properly. Trying to take as
 little space as possible and be non-intrusive as possible, the library
@@ -37,21 +34,18 @@ int main(int argc, char** argv)
 
 > [!NOTE]
 >
-> Even though unlikely, there is still a possibility that loading dynamic
-> linker will fail. To check if there was an error just check the
-> `sd_got.success` and if there was one `sd_got.error` will contain the error
-> code.
+> Even though unlikely, there is still a possibility that loading the dynamic
+> linker will fail. To check if there was an error just check `sd_got.success`
+> and if there was one, `sd_got.error` will contain the error code. It is
+> advised to check for the `success` at the beginning of the `main`.
 
-The access to the `dlopen` and other functions just access the `sd_got` global.
-There are also a `SD_RTLD_NOW` and `SD_RTLD_LAZY` macros already defined to
-avoid including additional headers.
+If the linker was loaded successfully, `sd_got` will contain `dlopen`, `dlsym`,
+`dlclose`, `dlerror` function pointers. There are also `SD_RTLD_NOW` and
+`SD_RTLD_LAZY` macros already defined to avoid including additional headers.
 
 ```c
 void* libc = sd_got.dlopen("libc.so.6", SD_RTLD_NOW);
 ```
-
-The `sd_got` itself contains 4 function pointers: `dlopen`, `dlsym`,
-`dlclose`, `dlerror`.
 
 #### Compilation flags
 
@@ -62,10 +56,25 @@ execution should start. For this to work, build must include compilation flags:
 
 #### Usage with statically linked `musl`
 
-If program links `musl` it is advised to define `SD_MUSL` to allow for a
-graceful fallback in case of linker loading error. If that happen the `musl`
-library will still be initialized and so you would be able to call it's
-functions as usual. Otherwise your program will fail on the first `musl` call.
+It is not advisable to link `musl` in addition to using this library. The
+reason for this is that `musl` (like `glibc`) needs to be initialized before it
+can be properly used. This is usually done by calling `__libc_start_main`, but
+since the program is initialized though the dynamic linker, the `musl`
+initialization is never invoked. But that is not the whole issue. Both `musl`
+and `glibc` want to set up `TLS` the way they need it, so calling
+`__libc_start_main` after dynamic linker setup will break `glibc`, but without
+it `musl` is in a broken state.
+
+Fortunately, some `musl` functions (like `printf`) can still work as long as
+they do not set `errno` (since `errno` is inside `TLS` block, but `glibc` and
+`musl` put it at different offsets), or access uninitialized global variables
+(for example `pthread_create` will fail because `libc.can_do_threads` will not
+be set by `__init_tls` call).
+
+> [!WARNING]
+>
+> In general it is better to avoid linking `musl` and just rely on raw syscalls
+> or functions obtained from loaded `glibc`.
 
 #### Example
 
@@ -80,45 +89,75 @@ First you need to add `_start` definition to your root module:
 pub const _start = {};
 ```
 
-This will tell Zig to not generate `_start` symbol. It is already present in the `static_dynamic.h`.
+This will tell Zig to not generate the `_start` symbol since it is already present in `static_dynamic.h`.
 
-The main definition needs to be defined as:
+The `main` function should be defined as:
 
 ```zig
 export fn main(argc: u64, argv: [*]const [*:0]const u8) callconv(.c) i32
 ```
 
-Then `static_dynamic.zig` file contains bindings for the types and global `sd_got`:
+The first thing you would need to call inside `main` is `sd.init` which will
+perform setup of global variables inside Zig `std`. More about this down below.
+Additionally don't forget to check `sd.got.result.success` just in case.
+
+```zig
+export fn main(argc: u64, argv: [*]const [*:0]const u8) callconv(.c) i32 {
+    sd.init(argc, argv);
+    if (sd.got.result.success == 0) return 1;
+    ...
+}
+```
+
+The usage of provided functions is very close to the C version:
 
 ```zig
 const libc = sd.got.fns.dlopen("libc.so.6", .{ .NOW = true });
 ```
 
-#### Build
+#### `build.zig`
 
-All you need to do is to add C compilation file to your root module:
+All you need to do is to add C source file to your `root_module`:
 
 ```zig
 const sd_c = b.addWriteFiles().add("static_dynamic.c",
     \\#include "static_dynamic.h"
 );
-mod.addCSourceFile(.{
+root_module.addCSourceFile(.{
     .file = sd_c,
-    .flags = &[_][]const u8{ "-nostartfiles", "-nodefaultlibs", "-nostdlib", "-fno-stack-protector" },
+    .flags = &[_][]const u8{ "-fno-stack-protector" },
 });
-mod.addIncludePath(b.path("."));
+root_module.addIncludePath(b.path("."));
 ```
+
+#### About `sd.init`
+
+Zig needs to have some initialization performed in order for `std` to work
+properly. Usually Zig does it inside its `std.start` code, but since we skip
+it, we need to do it ourselves. The `static_dynamic.zig` provides an `init`
+function specifically for this purpose.
 
 > [!NOTE]
 >
-> Linking with `musl` does not work. Compiling with `link_libc` and
-> `-Dtarget=x86_64-linux-musl` creates a symbol collision since Zig linkes
-> `crt1.o` which defines it's own `_start`
+> Even though `sd.init` makes Zig `std` functions work, there is a caveat when
+> it comes to the `std.Thread.spawn`: it only creates `TLS` for the Zig usage,
+> so using `libc` functions from these threads most likely will crash the
+> program. Instead it is better to just load `pthread_create` and use that for
+> new thread creation. This way new threads will be able to use both `std` and
+> `libc` functions.
+
+
+#### Usage with statically linked `musl`
+
+Linking with `musl` does not work. Compiling with `link_libc = true` and
+`-Dtarget=x86_64-linux-musl` creates a symbol collision since Zig links
+`crt1.o` unconditionally which defines its own `_start`. Working around this
+issue by compiling Zig code to object files and doing external linking will hit
+same issues as the C version.
 
 #### Example
 
 All of the info above is also repeated in `build.zig` and `static_dynamic_test.zig`.
-
 
 ## Acknowledgements
 

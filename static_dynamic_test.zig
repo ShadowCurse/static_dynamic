@@ -23,6 +23,8 @@ const rlVector2 = extern struct {
 };
 
 export fn main(argc: u64, argv: [*]const [*:0]const u8) callconv(.c) i32 {
+    sd.init(argc, argv);
+
     if (sd.got.result.success == 0) {
         std.log.err("error during linker loading: {t}", .{sd.got.result.@"error"});
         return 1;

@@ -14,21 +14,11 @@ static inline int my_write(sd_u64 fd, void* buf, sd_u64 len) {
 }
 
 int main(int argc, char** argv) {
-#if defined(SD_MUSL)
   if (!sd_got.success) {
-    printf("error during linker loading: %d\n", sd_got.error);
-    return 1;
-  }
-  printf("sd_got dlopen:  %p\n", sd_got.dlopen);
-  printf("sd_got dlsym:   %p\n", sd_got.dlsym);
-  printf("sd_got dlclose: %p\n", sd_got.dlclose);
-  printf("sd_got dlerror: %p\n", sd_got.dlerror);
-#else
-  if (!sd_got.success) {
+    sd_c_tls_init((sd_u64*)(argv - 1));
     my_write(0, "error during linker loading, aborting\n", 38);
-    return 1;
+    return tl_a;
   }
-#endif
 
   void* libc   = sd_got.dlopen("libc.so.6", SD_RTLD_NOW);
   void* libm   = sd_got.dlopen("libm.so.6", SD_RTLD_NOW);
