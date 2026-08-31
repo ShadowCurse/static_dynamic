@@ -163,6 +163,13 @@ same issues as the C version.
 
 All of the info above is also repeated in `build.zig` and `static_dynamic_test.zig`.
 
+### Tests
+
+```bash
+# will compile tests with `bash ./built.sh tests` and `zig build tests` and run them
+$ bash ./test.sh
+```
+
 ## Acknowledgements
 
 - [Detour](https://github.com/graphitemaster/detour) - provided the base idea

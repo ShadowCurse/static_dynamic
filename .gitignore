@@ -3,3 +3,4 @@
 static_dynamic
 .zig-cache
 zig-out
+tests_c/build
