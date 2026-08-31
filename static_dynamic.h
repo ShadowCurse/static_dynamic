@@ -47,6 +47,11 @@ sd_got_t sd_got;
 
 extern int main(int argc, char** argv);
 
+// In case somewone wants to change the default binary.
+#if !defined(SD_BOUNCE_BINARY)
+  #define SD_BOUNCE_BINARY "/bin/sh"
+#endif
+
 // Sets the thread pointer and reserves the static TLS block for the main
 // thread. Usually this is done by the dynamic linker, but in case where
 // loading of the dynamic linker failed (sd_got.success == 0), this function
@@ -478,7 +483,7 @@ extern void sd_stage2_entry(void);
 // a distribution which does not have `/bin/sh` or has it statically linked, but then ...
 // you can't win them all..
 static sd_error sd_read_linker_path(char* linker_path) {
-  char*  file_path = "/bin/sh";
+  char*  file_path = SD_BOUNCE_BINARY;
   sd_i32 file_fd   = sd_open(file_path, SD_O_RDONLY);
   if (file_fd < 0) {
     return SD_ERROR_NO_BOUNCE_BINARY;

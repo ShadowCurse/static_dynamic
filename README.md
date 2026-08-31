@@ -24,6 +24,10 @@ space which is just a small percentage of the usual stack on linux.
 
 ## Usage
 
+### Bounce file
+
+The bounce file can be overwritten by defining `SD_BOUNCE_BINARY` (default `/bin/sh`).
+
 ### C
 
 Just include the header to your application and ensure the `main` function signature is
