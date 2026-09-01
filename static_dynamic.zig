@@ -1,7 +1,10 @@
 const std = @import("std");
 
 pub const dlopen_fn = *const fn (path: [*c]const u8, flags: std.c.RTLD) callconv(.c) ?*anyopaque;
-pub const dlsym_fn = *const fn (noalias handle: ?*anyopaque, noalias symbol: [*c]const u8) callconv(.c) ?*anyopaque;
+pub const dlsym_fn = *const fn (
+    noalias handle: ?*anyopaque,
+    noalias symbol: [*c]const u8,
+) callconv(.c) ?*const fn () void;
 pub const dlclose_fn = *const fn (handle: ?*anyopaque) callconv(.c) i32;
 pub const dlerror_fn = *const fn () callconv(.c) [*c]u8;
 pub const @"error" = enum(u64) {
