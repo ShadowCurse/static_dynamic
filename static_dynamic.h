@@ -567,18 +567,13 @@ static sd_error sd_mmap_linker(char* linker_path, sd_u32 page_size, sd_u8** mmap
 
       sd_u8* map = sd_mmap((void*)beg, sz, SD_PROT_WRITE, SD_MAP_FIXED | SD_MAP_ANONYMOUS | SD_MAP_PRIVATE, -1, 0);
       if ((sd_i64)map < 0) {
-        for (sd_elf64_phdr* j = linker_phdrs; i != j; j += 1) {
-            sd_u64 off = sd_offset_from_alignment_64(i->p_vaddr, page_size);
-            sd_u64 beg = (sd_u64)(linker_mmap + sd_align_down_64(i->p_vaddr, page_size));
-            sd_i64 sz  = sd_align_up_64(i->p_memsz + off, page_size);
-            sd_munmap((void*)beg, sz);
-        }
-
+        sd_munmap(linker_mmap, va);
         sd_close(linker_file_fd);
         return SD_ERROR_CANNOT_LOAD_LINKER;
       }
 
       if (sd_pread(linker_file_fd, map + off, i->p_filesz, i->p_offset) != i->p_filesz) {
+        sd_munmap(linker_mmap, va);
         sd_close(linker_file_fd);
         return SD_ERROR_CANNOT_LOAD_LINKER;
       }
@@ -587,7 +582,11 @@ static sd_error sd_mmap_linker(char* linker_path, sd_u32 page_size, sd_u8** mmap
       if (i->p_flags & SD_PF_R) prot |= SD_PROT_READ;
       if (i->p_flags & SD_PF_W) prot |= SD_PROT_WRITE;
       if (i->p_flags & SD_PF_X) prot |= SD_PROT_EXEC;
-      sd_mprotect(map, sz, prot);
+      if (sd_mprotect(map, sz, prot) != 0) {
+        sd_munmap(linker_mmap, va);
+        sd_close(linker_file_fd);
+        return SD_ERROR_CANNOT_LOAD_LINKER;
+      }
     }
   }
   sd_close(linker_file_fd);
