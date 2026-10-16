@@ -684,7 +684,7 @@ void sd_stage1_entry(sd_u64* sp) {
   if (e != SD_ERROR_NONE) {
     sd_stage2_bypass(sp, e);
   }
-  sd_u32 linker_path_len = sd_strlen(linker_path);
+  sd_u32 linker_path_len = sd_strlen(linker_path) + 1;
 
   sd_u8* linker_map;
   sd_u64 e_entry;
