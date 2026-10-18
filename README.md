@@ -13,10 +13,9 @@ independent.
 
 For doing all of the preparatory work, the library needs some space to store
 data required for the dynamic linker to launch properly. Trying to take as
-little space as possible and be non-intrusive as possible, the library
-allocates all of the permanent data on the stack in a tightly packed manner.
-This uses ~2K (depends on the number of args and env vars present) of the stack
-space which is just a small percentage of the usual stack on linux.
+little space as possible and be non-intrusive as possible, the library keeps
+this data in a fixed minimal buffer in `.bss` (with default options it takes
+~1.5K of space) and patches the auxiliary vector on the stack in place.
 
 > [!NOTE]
 >
@@ -27,6 +26,14 @@ space which is just a small percentage of the usual stack on linux.
 ### Bounce file
 
 The bounce file can be overwritten by defining `SD_BOUNCE_BINARY` (default `/bin/sh`).
+
+### Maximum number of PHDRs
+
+This value can be overwritten by defining `SD_PHDRS_MAX` (default `16`).
+
+### Maximum length of the linker path
+
+This value can be overwritten by defining `SD_LINKER_PATH_MAX` (default `128`).
 
 ### C
 

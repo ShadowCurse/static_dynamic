@@ -17,8 +17,10 @@ typedef char* (*sd_dlerror_fn)(void);
 
 typedef enum sd_u64 {
   SD_ERROR_NONE,
+  SD_ERROR_TOO_MANY_PHDRS,
   SD_ERROR_NO_BOUNCE_BINARY,
   SD_ERROR_CANNOT_READ_BOUNCE_BINARY,
+  SD_ERROR_LINKER_PATH_TOO_LONG,
   SD_ERROR_NO_LINKER_PATH,
   SD_ERROR_NO_LINKER,
   SD_ERROR_CANNOT_LOAD_LINKER,
@@ -50,6 +52,16 @@ extern int main(int argc, char** argv);
 // In case somewone wants to change the default binary.
 #if !defined(SD_BOUNCE_BINARY)
   #define SD_BOUNCE_BINARY "/bin/sh"
+#endif
+
+// Upper bound on the number of program headers of this binary. Usual static binaries have ~10.
+#if !defined(SD_PHDRS_MAX)
+  #define SD_PHDRS_MAX 16
+#endif
+
+// Maximum length of a linker path including null terminator.
+#if !defined(SD_LINKER_PATH_MAX)
+  #define SD_LINKER_PATH_MAX 128
 #endif
 
 // Sets the thread pointer and reserves the static TLS block for the main
@@ -502,6 +514,10 @@ static sd_error sd_read_linker_path(char* linker_path) {
       return SD_ERROR_CANNOT_READ_BOUNCE_BINARY;
     }
     if (phdr.p_type == SD_PT_INTERP) {
+      if (SD_LINKER_PATH_MAX < phdr.p_filesz) {
+        sd_close(file_fd);
+        return SD_ERROR_LINKER_PATH_TOO_LONG;
+      }
       if (sd_pread(file_fd, linker_path, phdr.p_filesz, phdr.p_offset) != phdr.p_filesz) {
         sd_close(file_fd);
         return SD_ERROR_CANNOT_READ_BOUNCE_BINARY;
@@ -597,7 +613,6 @@ static sd_error sd_mmap_linker(char* linker_path, sd_u32 page_size, sd_u8** mmap
   return SD_ERROR_NONE;
 }
 
-
 void sd_stage2_bypass(sd_u64* sp, sd_error e) {
     sd_got.success = 0;
     sd_got.error   = e;
@@ -619,32 +634,32 @@ void sd_stage2_bypass(sd_u64* sp, sd_error e) {
   __builtin_unreachable();
 }
 
-// stage1 performs the search for the dynamic linker path, loads the linker in the virtual
-// address space of this process, prepares needed data for the linker and lastly jumps into it.
+// This specifies what library we want and what symbols from it we want. The
+// result will be placed in the `got`, one entry per symbol excluding
+// `libc.so.6` which specifies the library to get symbols from.
+static const char sd_strtab_str[] = "\000libc.so.6\000dlopen\000dlsym\000dlclose\000dlerror\000";
+
+#define SD_DYN_NUM 9
+#define SD_SYMTAB_NUM 5
+
+// Additional tables we need for linker setup. These need to be persistent, so put them into `.bss`.
+static struct {
+  sd_elf64_phdr phdrs [SD_PHDRS_MAX + 2];
+  sd_elf64_dyn  dyn   [SD_DYN_NUM];
+  sd_elf64_sym  symtab[SD_SYMTAB_NUM];
+  sd_elf64_rela rela  [sizeof(sd_got_t) / sizeof(void*)];
+  char          linker_path[SD_LINKER_PATH_MAX];
+} sd_data;
+
+// stage1 performs the search for the dynamic linker path, loads the linker in
+// the virtual address space of this process, prepares needed data for the
+// linker and lastly jumps into it.
 //
-// Since the data for the linker needs to be stored permanently somewhere, we just store it
-// on the program stack outside any function frame. The stack allocation happen in the `_start`.
+// All additional data is stored in `sd_data`. Auxv entries are patched in
+// place to point to this new table.
 //
-// The layout of memory will look like this:
-//
-// | ...
-// | original argc
-// | original argc
-// |--------------- <- This where `sp` argument points to. This is an original `sp` given to us by the kernel.
-// |                   It will also be used if linker loading fails in any way.
-// | new phdrs
-// | new dyn
-// | new strtab
-// | new symtab
-// | new rela
-// | new interp
-// |---------------
-// | new auxv
-// | new envp
-// | new argv
-// | new argc
-// |--------------- <- This is where `sp` will point to when we jump to the linker. This way all data above
-// |                   `sp` will remain untouched.
+// If loading fails in any way, skip the stage2 and jump straight into the `main`
+// function with proper error code set.
 void sd_stage1_entry(sd_u64* sp) {
   sd_u64  orig_argc = *(sd_u64*)sp;
   sd_u64* orig_argv = (sd_u64*)(sp + 1);
@@ -654,15 +669,11 @@ void sd_stage1_entry(sd_u64* sp) {
   }
   orig_envp += 1;
   sd_elf64_auxv_t* orig_auxv = (sd_elf64_auxv_t*)orig_envp;
-  // Restore `orig_envp` since it was used to get to the `orig_auxv`
-  orig_envp = orig_argv + orig_argc + 1;
 
-  // Read auxv to get ones pointing to entries we need to modify
-  // also remember original phdrs since they will need to be copied
+  // Read auxv to get original phdrs since they will need to be copied
   sd_elf64_phdr*   orig_phdrs;
   sd_u32           orig_n_phdrs;
   sd_u32           page_size;
-  sd_u32           n_auxv = 0;
   sd_elf64_auxv_t* orig_auxv_copy = orig_auxv;
   while (orig_auxv->a_type != SD_AT_NULL) {
     if (orig_auxv->a_type == SD_AT_PHDR) {
@@ -673,13 +684,15 @@ void sd_stage1_entry(sd_u64* sp) {
       page_size = (sd_u32)orig_auxv->a_un.a_val;
     }
     orig_auxv += 1;
-    n_auxv    += 1;
   }
-  n_auxv   += 1;
   orig_auxv = orig_auxv_copy;
 
-  char linker_path [128] = {0};
-  sd_error e = sd_read_linker_path(linker_path);
+  if (SD_PHDRS_MAX < orig_n_phdrs) {
+    sd_stage2_bypass(sp, SD_ERROR_TOO_MANY_PHDRS);
+  }
+
+  char* linker_path = sd_data.linker_path;
+  sd_error e        = sd_read_linker_path(linker_path);
   if (e != SD_ERROR_NONE) {
     sd_stage2_bypass(sp, e);
   }
@@ -692,95 +705,69 @@ void sd_stage1_entry(sd_u64* sp) {
     sd_stage2_bypass(sp, e);
   }
 
-  // Start setting up the required structures starting from the original sp
-  // in backwards direction. This way all data is tightly packed just bellow original sp
-  // wasting minimum amount of space.
-  sd_u32         n_phdrs     = orig_n_phdrs + 2;
-  sd_u32         phdrs_bytes = n_phdrs * sizeof(sd_elf64_phdr);
-  sd_elf64_phdr* phdrs       = (sd_elf64_phdr*)sd_align_down_64((sd_u64)sp - phdrs_bytes, 8);
-
-  sd_u64        n_dyn     = 9;
-  sd_u32        dyn_bytes = n_dyn * sizeof(sd_elf64_dyn);
-  sd_elf64_dyn* dyn       = (sd_elf64_dyn*)sd_align_down_64((sd_u64)phdrs - dyn_bytes, 8);
-
-  // This specifies what library we want and what symbols from it we want.
-  // The result will be placed in the `got`
-  char   strtab_str[]   = "\000libc.so.6\000dlopen\000dlsym\000dlclose\000dlerror\000";
-  sd_u32 strtab_str_len = sizeof(strtab_str) - 1;
-  char*  strtab         = (char*)((sd_u64)dyn - strtab_str_len);
-
-  sd_u32        n_sym        = 5;
-  sd_u32        symtab_bytes = n_sym * sizeof(sd_elf64_sym);
-  sd_elf64_sym* symtab       = (sd_elf64_sym*)sd_align_down_64((sd_u64)strtab - symtab_bytes, 8);
-
-  sd_u32         n_rela     = sizeof(sd_got_t) / sizeof(void*);
-  sd_u32         rela_bytes = n_rela * sizeof(sd_elf64_rela);
-  sd_elf64_rela* rela       = (sd_elf64_rela*)sd_align_down_64((sd_u64)symtab - rela_bytes, 8);
-
-  char* interp = (char*)((sd_u64)rela - linker_path_len);
+  sd_u32 n_phdrs     = orig_n_phdrs + 2;
+  sd_u32 phdrs_bytes = n_phdrs * sizeof(sd_elf64_phdr);
 
   // Copy original phdrs as they are except with modification to the PT_PHDR
   // since they are now at a different address
   for (sd_u32 i = 0; i < orig_n_phdrs; i += 1) {
     if (orig_phdrs[i].p_type == SD_PT_PHDR) {
-      phdrs[i] = (sd_elf64_phdr){
+      sd_data.phdrs[i] = (sd_elf64_phdr){
         .p_type   = SD_PT_PHDR,
         .p_flags  = SD_PF_R,
         .p_offset = 0,
-        .p_vaddr  = (sd_u64)phdrs,
+        .p_vaddr  = (sd_u64)sd_data.phdrs,
         .p_paddr  = 0,
         .p_filesz = phdrs_bytes,
         .p_memsz  = phdrs_bytes,
         .p_align  = 8,
       };
     } else {
-      phdrs[i] = orig_phdrs[i];
+      sd_data.phdrs[i] = orig_phdrs[i];
     }
   }
   // Add new PT_DYNAMIC and PT_INTERP phdrs which the linker will use to get us
   // functions from libc
-  phdrs[orig_n_phdrs] = (sd_elf64_phdr){
+  sd_data.phdrs[orig_n_phdrs] = (sd_elf64_phdr){
       .p_type   = SD_PT_DYNAMIC,
       .p_flags  = SD_PF_R | SD_PF_W,
       .p_offset = 0,
-      .p_vaddr  = (sd_u64)dyn,
+      .p_vaddr  = (sd_u64)sd_data.dyn,
       .p_paddr  = 0,
-      .p_filesz = n_dyn * sizeof(sd_elf64_dyn),
-      .p_memsz  = n_dyn * sizeof(sd_elf64_dyn),
+      .p_filesz = sizeof(sd_data.dyn),
+      .p_memsz  = sizeof(sd_data.dyn),
       .p_align  = 8,
   };
-  phdrs[orig_n_phdrs + 1] = (sd_elf64_phdr){
+  sd_data.phdrs[orig_n_phdrs + 1] = (sd_elf64_phdr){
       .p_type   = SD_PT_INTERP,
       .p_flags  = SD_PF_R,
       .p_offset = 0,
-      .p_vaddr  = (sd_u64)interp,
+      .p_vaddr  = (sd_u64)linker_path,
       .p_paddr  = 0,
       .p_filesz = linker_path_len,
       .p_memsz  = linker_path_len,
       .p_align  = 1,
   };
 
-  // These are offsets into the `strtab_str`
+  // These are offsets into the `sd_strtab_str`
   sd_u32 strtab_libc_off         =  1;
   sd_u32 strtab_dlopen_name_off  = 11;
   sd_u32 strtab_dlsym_name_off   = 18;
   sd_u32 strtab_dlclose_name_off = 24;
   sd_u32 strtab_dlerror_name_off = 32;
 
-  dyn[0] = (sd_elf64_dyn){ .d_tag = SD_DT_NEEDED,  .d_un.d_val = strtab_libc_off    };
-  dyn[1] = (sd_elf64_dyn){ .d_tag = SD_DT_STRTAB,  .d_un.d_val = (sd_u64)strtab     };
-  dyn[2] = (sd_elf64_dyn){ .d_tag = SD_DT_STRSZ,   .d_un.d_val = strtab_str_len     };
-  dyn[3] = (sd_elf64_dyn){ .d_tag = SD_DT_SYMTAB,  .d_un.d_val = (sd_u64)symtab     };
-  dyn[4] = (sd_elf64_dyn){ .d_tag = SD_DT_SYMENT,  .d_un.d_val = sizeof(sd_elf64_sym)  };
-  dyn[5] = (sd_elf64_dyn){ .d_tag = SD_DT_RELA,    .d_un.d_val = (sd_u64)rela       };
-  dyn[6] = (sd_elf64_dyn){ .d_tag = SD_DT_RELASZ,  .d_un.d_val = rela_bytes         };
-  dyn[7] = (sd_elf64_dyn){ .d_tag = SD_DT_RELAENT, .d_un.d_val = sizeof(sd_elf64_rela) };
-  dyn[8] = (sd_elf64_dyn){ .d_tag = SD_DT_NULL,    .d_un.d_val = 0                  };
+  sd_data.dyn[0] = (sd_elf64_dyn){ .d_tag = SD_DT_NEEDED,  .d_un.d_val = strtab_libc_off           };
+  sd_data.dyn[1] = (sd_elf64_dyn){ .d_tag = SD_DT_STRTAB,  .d_un.d_val = (sd_u64)sd_strtab_str     };
+  sd_data.dyn[2] = (sd_elf64_dyn){ .d_tag = SD_DT_STRSZ,   .d_un.d_val = sizeof(sd_strtab_str) - 1 };
+  sd_data.dyn[3] = (sd_elf64_dyn){ .d_tag = SD_DT_SYMTAB,  .d_un.d_val = (sd_u64)sd_data.symtab  };
+  sd_data.dyn[4] = (sd_elf64_dyn){ .d_tag = SD_DT_SYMENT,  .d_un.d_val = sizeof(sd_elf64_sym)      };
+  sd_data.dyn[5] = (sd_elf64_dyn){ .d_tag = SD_DT_RELA,    .d_un.d_val = (sd_u64)sd_data.rela    };
+  sd_data.dyn[6] = (sd_elf64_dyn){ .d_tag = SD_DT_RELASZ,  .d_un.d_val = sizeof(sd_data.rela)    };
+  sd_data.dyn[7] = (sd_elf64_dyn){ .d_tag = SD_DT_RELAENT, .d_un.d_val = sizeof(sd_elf64_rela)     };
+  sd_data.dyn[8] = (sd_elf64_dyn){ .d_tag = SD_DT_NULL,    .d_un.d_val = 0                         };
 
-  sd_memcpy(strtab, strtab_str, strtab_str_len);
-
-  symtab[0] = (sd_elf64_sym){0};
-  symtab[1] = (sd_elf64_sym){
+  sd_data.symtab[0] = (sd_elf64_sym){0};
+  sd_data.symtab[1] = (sd_elf64_sym){
     .st_name  = strtab_dlopen_name_off,
     .st_info  = 0x12,
     .st_other = 0,
@@ -788,7 +775,7 @@ void sd_stage1_entry(sd_u64* sp) {
     .st_value = 0,
     .st_size  = 0
   };
-  symtab[2] = (sd_elf64_sym){
+  sd_data.symtab[2] = (sd_elf64_sym){
     .st_name  = strtab_dlsym_name_off,
     .st_info  = 0x12,
     .st_other = 0,
@@ -796,7 +783,7 @@ void sd_stage1_entry(sd_u64* sp) {
     .st_value = 0,
     .st_size  = 0
   };
-  symtab[3] = (sd_elf64_sym){
+  sd_data.symtab[3] = (sd_elf64_sym){
     .st_name  = strtab_dlclose_name_off,
     .st_info  = 0x12,
     .st_other = 0,
@@ -804,7 +791,7 @@ void sd_stage1_entry(sd_u64* sp) {
     .st_value = 0,
     .st_size  = 0
   };
-  symtab[4] = (sd_elf64_sym){
+  sd_data.symtab[4] = (sd_elf64_sym){
     .st_name  = strtab_dlerror_name_off,
     .st_info  = 0x12,
     .st_other = 0,
@@ -814,72 +801,40 @@ void sd_stage1_entry(sd_u64* sp) {
   };
 
   // Tell the linker where to write function pointers inside `got` table
-  rela[0] = (sd_elf64_rela){
+  sd_data.rela[0] = (sd_elf64_rela){
     .r_offset = (sd_u64)(&sd_got) + 0 * sizeof(sd_u64),
     .r_info   = (sd_u64)1 << 32 | SD_ARCH_GLOB_DAT ,
     .r_addend = 0
   };
-  rela[1] = (sd_elf64_rela){
+  sd_data.rela[1] = (sd_elf64_rela){
     .r_offset = (sd_u64)(&sd_got) + 1 * sizeof(sd_u64),
     .r_info   = (sd_u64)2 << 32 | SD_ARCH_GLOB_DAT ,
     .r_addend = 0
   };
-  rela[2] = (sd_elf64_rela){
+  sd_data.rela[2] = (sd_elf64_rela){
     .r_offset = (sd_u64)(&sd_got) + 2 * sizeof(sd_u64),
     .r_info   = (sd_u64)3 << 32 | SD_ARCH_GLOB_DAT ,
     .r_addend = 0
   };
-  rela[3] = (sd_elf64_rela){
+  sd_data.rela[3] = (sd_elf64_rela){
     .r_offset = (sd_u64)(&sd_got) + 3 * sizeof(sd_u64),
     .r_info   = (sd_u64)4 << 32 | SD_ARCH_GLOB_DAT ,
     .r_addend = 0
   };
 
-  sd_memcpy(interp, linker_path, linker_path_len);
-
-  // The stack needs to be 16 byte aligned, so calculate and subtract the
-  // total number of bytes needed for everything so the resulting address can
-  // be easily aligned
-  sd_u32 auxv_bytes  = n_auxv * sizeof(sd_elf64_auxv_t);
-  sd_u32 n_env       = (sd_u64*)orig_auxv - orig_envp - 1;
-  sd_u32 env_bytes   = (n_env + 1) * sizeof(sd_u64);
-  sd_u32 n_argv      = orig_argc;
-  sd_u32 argv_bytes  = n_argv * sizeof(sd_u64) + sizeof(sd_u64);
-  sd_u32 argc_bytes  = sizeof(sd_u64);
-  sd_u32 total_bytes = auxv_bytes + env_bytes + argv_bytes + argc_bytes;
-
-  sd_u64* argc          = (sd_u64*)sd_align_down_64((sd_u64)interp - total_bytes, 16);
-  sd_u64* argv          = argc + 1;
-  sd_u64* envp          = argv + n_argv + 1;
-  sd_elf64_auxv_t* auxv = (sd_elf64_auxv_t*)(envp + n_env + 1);
-
-  // Keep the arguments as they were passed to the original program but
-  // add one additional argument which is a pointer to the `got` table
-  *argc            = n_argv;
-  sd_memcpy((char*)argv, (char*)orig_argv, n_argv * sizeof(sd_u64));
-  argv[n_argv]     = 0x0;
-
-  // Copy all environment vars as they were since they now need to be
-  // at a different address
-  sd_memcpy((char*)envp, (char*)orig_envp, n_env * sizeof(sd_u64));
-  envp[n_env] = 0x0;
-
+  // Patch original auxv to point to new phdrs, entry and base
   while (orig_auxv->a_type != SD_AT_NULL) {
     if (orig_auxv->a_type == SD_AT_PHDR) {
-      *auxv = (sd_elf64_auxv_t){ .a_type = SD_AT_PHDR,  .a_un.a_val = (sd_u64)phdrs            };
+      orig_auxv->a_un.a_val = (sd_u64)sd_data.phdrs;
     } else if (orig_auxv->a_type == SD_AT_PHNUM) {
-      *auxv = (sd_elf64_auxv_t){ .a_type = SD_AT_PHNUM, .a_un.a_val = (sd_u64)n_phdrs          };
+      orig_auxv->a_un.a_val = (sd_u64)n_phdrs;
     } else if (orig_auxv->a_type == SD_AT_ENTRY) {
-      *auxv = (sd_elf64_auxv_t){ .a_type = SD_AT_ENTRY, .a_un.a_val = (sd_u64)&sd_stage2_entry };
+      orig_auxv->a_un.a_val = (sd_u64)&sd_stage2_entry;
     } else if (orig_auxv->a_type == SD_AT_BASE) {
-      *auxv = (sd_elf64_auxv_t){ .a_type = SD_AT_BASE,  .a_un.a_val = (sd_u64)linker_map       };
-    } else {
-      *auxv = *orig_auxv;
+      orig_auxv->a_un.a_val = (sd_u64)linker_map;
     }
     orig_auxv += 1;
-    auxv      += 1;
   }
-  *auxv     = (sd_elf64_auxv_t){ .a_type = SD_AT_NULL,  .a_un.a_val = (sd_u64)0                };
 
   sd_u64 linker_entry = (sd_u64)(linker_map + e_entry);
 
@@ -888,14 +843,14 @@ void sd_stage1_entry(sd_u64* sp) {
     "mov %1,%%rsp\n"
     "jmpq *%0\n"
     :
-    : "S"(linker_entry), "d"((sd_u64)argc)
+    : "S"(linker_entry), "d"((sd_u64)sp)
     : "memory");
 #elif defined(__aarch64__)
   __asm__ __volatile__(
       "mov sp, %1\n"
       "br %0\n"
       :
-      : "r"(linker_entry), "r"((sd_u64)argc)
+      : "r"(linker_entry), "r"((sd_u64)sp)
       : "memory");
 #endif
 
@@ -916,7 +871,6 @@ void _start(void);
       "_start:\n"
       "    movq %rsp, %rdi\n"
       "    movq %rdx, %rsi\n"
-      "    subq $8192, %rsp\n"
       "    call sd_stage1_entry\n"
       ".size _start, .-_start\n"
   );
@@ -927,7 +881,6 @@ void _start(void);
     "_start:\n"
     "    mov x1, x0\n"
     "    mov x0, sp\n"
-    "    sub sp, sp, #8192\n"
     "    ldr x2, =sd_stage1_entry\n"
     "    blr x2\n"
     ".size _start, .-_start\n"

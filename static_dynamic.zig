@@ -9,12 +9,14 @@ pub const dlclose_fn = *const fn (handle: ?*anyopaque) callconv(.c) i32;
 pub const dlerror_fn = *const fn () callconv(.c) [*c]u8;
 pub const @"error" = enum(u64) {
     none = 0,
-    no_bounce_binary = 1,
-    cannot_read_bounce_binary = 2,
-    no_linker_path = 3,
-    no_linker = 4,
-    cannot_load_linker = 5,
-    cannot_init_tls = 6, // This can only occur in `sd_c_tls_init` which zig code should not call.
+    too_many_phdrs = 1,
+    no_bounce_binary = 2,
+    cannot_read_bounce_binary = 3,
+    linker_path_too_long = 4,
+    no_linker_path = 5,
+    no_linker = 6,
+    cannot_load_linker = 7,
+    cannot_init_tls = 8, // This can only occur in `sd_c_tls_init` which zig code should not call.
 };
 pub const got_t = extern union {
     fns: extern struct {
