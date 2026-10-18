@@ -14,6 +14,7 @@ pub const @"error" = enum(u64) {
     no_linker_path = 3,
     no_linker = 4,
     cannot_load_linker = 5,
+    cannot_init_tls = 6, // This can only occur in `sd_c_tls_init` which zig code should not call.
 };
 pub const got_t = extern union {
     fns: extern struct {
